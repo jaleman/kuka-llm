@@ -4,7 +4,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 PY=.venv/bin/python
-CFG=train/cpt/lora-mac.yaml
+CFG=${CFG:-train/cpt/lora-mac.yaml}
 RUN=train/runs/cpt-mac
 MODEL=$(grep '^model:' $CFG | awk '{print $2}')
 mkdir -p "$RUN"
@@ -22,7 +22,7 @@ gen() {  # $1 = output file, $2.. = extra args
   done < train/cpt/prompts.txt
 }
 
-echo "== BEFORE =="; gen "$RUN/before.txt"
+if [ -s "$RUN/before.txt" ]; then echo "== BEFORE (reusing $RUN/before.txt) =="; else echo "== BEFORE =="; gen "$RUN/before.txt"; fi
 echo "== TRAIN =="; $PY -m mlx_lm lora -c $CFG 2>&1 | tee "$RUN/train.log"
 echo "== AFTER =="; gen "$RUN/after.txt" --adapter-path "$RUN/adapters"
 echo "done; logs in $RUN/"
