@@ -1,0 +1,5 @@
+The KMP 1500P is an autonomous mobile platform. Before starting the vehicle, the operator must
+The safety laser scanners on the KMP 600P monitor
+To create a new map in KUKA.AMR Fleet, open
+The battery of the KMP 3000P is charged by
+When the vehicle reports a localization error, the first step is to

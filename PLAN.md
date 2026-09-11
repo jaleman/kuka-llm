@@ -30,7 +30,7 @@ runnable on an NVIDIA DGX Spark.
 | 1 | Token count and corpus profile | complete | `data/count_tokens.py` |
 | 2 | Foundations toy run (tiny model, watch loss fall) | complete | Mac mini, mlx_lm, Qwen3-0.6B LoRA: val loss 2.11→1.26, test ppl 4.3; lesson 3 |
 | 3 | Build continued-pretraining dataset (raw text + 10–20% general mix) | complete | Done: 2.53M raw → 868k KUKA + 131k general tokens, unique-text 94%. `data/build_cpt_dataset.py`, `data/cpt-results.md`, lesson 4. |
-| 4 | Continued pretraining run (LoRA, 8B base, 3–5 epochs) | not started | |
+| 4 | Continued pretraining run (LoRA, 8B base, 3–5 epochs) | in progress | Mac rehearsal on Qwen3-1.7B first; real 8B run waits for the Spark |
 | 5 | Synthetic Q&A generation (5–10 pairs per chunk via teacher model) | not started | |
 | 6 | Supervised fine-tuning on Q&A | not started | |
 | 7 | Evaluation harness (held-out questions, LLM judge, 3-way comparison) | not started | base vs tuned vs base+MCP |
