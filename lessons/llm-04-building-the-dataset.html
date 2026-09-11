@@ -1,0 +1,248 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Model Lesson 4: Building the Dataset — From 2.5M Raw Tokens to 0.9M Worth Learning</title>
+    <link rel="stylesheet" href="../assets/style.css">
+</head>
+
+<body>
+    <div class="container">
+
+        <header class="lesson-header">
+            <div class="lesson-number">Model Lesson 4</div>
+            <h1>Building the Dataset — From 2.5M Raw Tokens to 0.9M Worth Learning</h1>
+            <div class="lesson-meta">
+                <span>Plan step 3</span>
+                <span>kuka-llm: baking KUKA knowledge into a model</span>
+            </div>
+        </header>
+
+        <h2>The goal of this step</h2>
+
+        <p>
+            Lesson 2 diagnosed the corpus. This step treats it. The output is
+            the file the Spark will train on: one JSON object per line, each a
+            piece of clean KUKA text no longer than the training window, with
+            a measured amount of ordinary English mixed in so the model does not
+            forget how to be a language model. The whole pipeline is one script,
+            <code>data/build_cpt_dataset.py</code>, and it prints a table of
+            token counts after every stage so nothing is removed invisibly.
+        </p>
+
+        <h2>The pipeline, stage by stage</h2>
+
+        <table class="comparison-table">
+            <thead>
+                <tr>
+                    <th>Stage</th>
+                    <th>Tokens</th>
+                    <th>What went</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr><td>Raw corpus</td><td>2,531,814</td><td>1,951 chunks, 106 documents</td></tr>
+                <tr><td>Drop excluded documents</td><td>1,762,604</td><td>Fleet manual releases 2.11, 2.14, 2.15; an older QR-code note; a duplicate reflector note</td></tr>
+                <tr><td>Strip front matter</td><td>1,456,579</td><td>The YAML block on every chunk</td></tr>
+                <tr><td>Layout cleaning</td><td>1,159,931</td><td>Page footers, pdftotext indentation, hyphenated line breaks</td></tr>
+                <tr><td>Paragraph near-dedupe</td><td>869,192</td><td>5,245 paragraphs already seen in a larger manual</td></tr>
+                <tr><td>Re-chunk to 2,048 tokens</td><td>867,938</td><td>Pieces under 48 tokens</td></tr>
+                <tr><td>Add general text</td><td>+130,836</td><td>15% FineWeb-Edu, educational score 3 or higher</td></tr>
+            </tbody>
+        </table>
+
+        <p>
+            Two thirds of the raw corpus is gone and the unique-text estimate
+            went from 60% to 94%. Nothing a KUKA engineer would want the model
+            to know was removed. What follows explains the two stages that were
+            not obvious.
+        </p>
+
+        <h2>Layout cleaning: what pdftotext leaves behind</h2>
+
+        <p>
+            The extractor preserved the PDF's visual layout so that tables stay
+            readable for search. For training, that layout is expensive. Every
+            body line arrived indented by 20 to 30 spaces, words were split with
+            a hyphen at line ends ("render-⏎ing"), and every page carried a
+            footer with the manual name, issue date, and page number. The
+            footers alone were on 1,900 pages, in two mirror-image shapes for
+            left and right pages, and it took three passes to catch them all.
+            The lesson: <em>check the output, not the regex.</em> Each rebuild
+            ended with a residue count, and the count is what found the second
+            and third footer shapes.
+        </p>
+
+        <p><strong>Python:</strong></p>
+        <pre><code>FRONT = re.compile(r"\A---\n.*?\n---\n", re.DOTALL)
+FOOTER = re.compile(r"^.*\|\s*\d+\s*/\s*\d+\s*$", re.MULTILINE)      # "... | 77/755"
+FOOTER3 = re.compile(r"^(?=.*www\.kuka\.com)(?=.*\|).*$", re.MULTILINE)  # domain and a pipe, any order
+HYPHEN_BREAK = re.compile(r"([a-z])-\n[ \t]*([a-z])")
+LEADING_WS = re.compile(r"^[ \t]+", re.MULTILINE)
+
+def clean(text: str) -&gt; str:
+    text = FRONT.sub("", text, count=1)
+    text = FOOTER.sub("", text)
+    text = FOOTER3.sub("", text)
+    text = HYPHEN_BREAK.sub(r"\1\2", text)
+    text = LEADING_WS.sub("", text)
+    return text.strip()</code></pre>
+
+        <p><strong>Java equivalent:</strong></p>
+        <pre><code>static final Pattern FRONT = Pattern.compile("\\A---\\n.*?\\n---\\n", Pattern.DOTALL);
+static final Pattern FOOTER = Pattern.compile("^.*\\|\\s*\\d+\\s*/\\s*\\d+\\s*$", Pattern.MULTILINE);
+static final Pattern FOOTER3 = Pattern.compile("^(?=.*www\\.kuka\\.com)(?=.*\\|).*$", Pattern.MULTILINE);
+static final Pattern HYPHEN_BREAK = Pattern.compile("([a-z])-\\n[ \\t]*([a-z])");
+static final Pattern LEADING_WS = Pattern.compile("^[ \\t]+", Pattern.MULTILINE);
+
+static String clean(String text) {
+    text = FRONT.matcher(text).replaceFirst("");
+    text = FOOTER.matcher(text).replaceAll("");
+    text = FOOTER3.matcher(text).replaceAll("");
+    text = HYPHEN_BREAK.matcher(text).replaceAll("$1$2");
+    text = LEADING_WS.matcher(text).replaceAll("");
+    return text.strip();
+}</code></pre>
+
+        <p>
+            The regex dialects are nearly identical. Python's raw strings
+            (<code>r"..."</code>) spare you the doubled backslashes, and
+            <code>re.sub</code> with <code>count=1</code> is
+            <code>replaceFirst</code>. The lookaheads in <code>FOOTER3</code>
+            are the idiom for "a line containing both A and B in either order".
+        </p>
+
+        <h2>Paragraph-level near-dedupe: the stage that mattered most</h2>
+
+        <p>
+            After dropping the old fleet releases, the unique-text estimate was
+            still only 72%. The per-document view showed why: every KMP
+            platform manual (250P, 600P, 600P-EU, 1500P, 1500P-EU, 3000P, the
+            KMF and KMPC variants) is built from the same template. The
+            safety chapter, the transport chapter, the maintenance intervals
+            and the legal notices are identical across all of them, and only
+            the tables of dimensions, loads, and part numbers differ. Dropping
+            whole documents would lose those tables. Keeping whole documents
+            would train the safety chapter seven times.
+        </p>
+
+        <p>
+            The fix works at paragraph granularity. Documents are visited
+            largest first. Each paragraph is turned into its set of 8-word
+            shingles (the same function as lesson 2). If 80% or more of those
+            shingles have already been seen in an earlier paragraph, the
+            paragraph is dropped; otherwise it is kept and its shingles are
+            added to the seen set. Headings and short lines have no shingles
+            and are always kept, so structure survives.
+        </p>
+
+        <p><strong>Python:</strong></p>
+        <pre><code>order = sorted(uniq, key=lambda ft: (-doc_size[doc_of(ft[0])], ft[0].name))
+seen_sh: set[int] = set()
+for f, t in order:
+    keep_paras = []
+    for para in t.split("\n\n"):
+        sh = shingles(para, 8)
+        if sh:
+            contained = len(sh &amp; seen_sh) / len(sh)
+            if contained &gt;= args.para_dedupe:      # 0.8
+                continue
+            seen_sh |= sh
+        keep_paras.append(para)
+    deduped.append((f, "\n\n".join(keep_paras).strip()))</code></pre>
+
+        <p><strong>Java equivalent:</strong></p>
+        <pre><code>List&lt;Chunk&gt; order = uniq.stream()
+    .sorted(Comparator.comparingInt((Chunk c) -&gt; -docSize.get(c.doc())).thenComparing(Chunk::name))
+    .toList();
+Set&lt;Integer&gt; seen = new HashSet&lt;&gt;();
+for (Chunk c : order) {
+    List&lt;String&gt; keep = new ArrayList&lt;&gt;();
+    for (String para : c.text().split("\n\n")) {
+        Set&lt;Integer&gt; sh = shingles(para, 8);
+        if (!sh.isEmpty()) {
+            long hits = sh.stream().filter(seen::contains).count();
+            if ((double) hits / sh.size() &gt;= paraDedupe) continue;
+            seen.addAll(sh);
+        }
+        keep.add(para);
+    }
+    deduped.add(new Chunk(c.name(), c.doc(), String.join("\n\n", keep).strip()));
+}</code></pre>
+
+        <p>
+            This single pass removed 5,245 paragraphs and 290,000 tokens, and
+            took the unique-text estimate from 72% to 94%. The 600P-EU manual
+            kept 27,000 of its original 82,000 tokens: exactly its
+            region-specific content, with the shared chapters served once by
+            the larger 3000P manual.
+        </p>
+
+        <p>
+            The threshold is a judgement. At 0.8 a paragraph that differs in
+            one number out of a five-line table is still kept, because the
+            surrounding shingles change too. At 0.5 you would start losing
+            those. The knob is <code>--para-dedupe</code> and the residue table
+            makes the effect visible.
+        </p>
+
+        <h2>The general-text mix</h2>
+
+        <p>
+            <code>data/fetch_general.py</code> streams FineWeb-Edu, a web crawl
+            filtered for educational quality, keeps documents scoring 3 or
+            higher on its 0 to 5 scale, cuts each at a paragraph boundary under
+            2,048 tokens, and stops at the target count. Nothing beyond what is
+            kept is downloaded. Fifteen percent of the KUKA token count is the
+            middle of the usual 10 to 20 percent range; it costs one extra
+            epoch's worth of compute and buys a model that still writes English.
+            KUKA rows and general rows are split into train, valid, and test
+            separately, so the validation loss measures the same mix the model
+            trained on.
+        </p>
+
+        <h2>Provenance</h2>
+
+        <p>
+            Every KUKA row is written with an id like
+            <code>ba_kmp_3000p_series_en-p010-018#1</code> into
+            <code>provenance.jsonl</code> alongside the parent document, page
+            range, and token count. The model never sees these fields. They
+            exist so that when the step 7 harness finds a wrong answer, we can
+            trace which pages the model did or did not train on. In the MCP
+            server this information lived in the front matter; here it lives in
+            a sidecar.
+        </p>
+
+        <h2>Running it</h2>
+
+        <pre><code>cd ~/Projects/kuka-llm
+source .venv/bin/activate
+python data/fetch_general.py --target-tokens 260000         # once; streams ~900 docs
+python data/build_cpt_dataset.py ../kuka-mcp/knowledge       # ~1 min; prints the stage table
+python data/build_cpt_dataset.py ../kuka-mcp/knowledge --para-dedupe 0.6 --out data/out/cpt-strict</code></pre>
+
+        <p>
+            Full numbers for today's build are in <code>data/cpt-results.md</code>.
+        </p>
+
+        <div class="ask-teacher">
+            <strong>Questions?</strong> Ask Claude directly. Good questions:
+            "Why visit the largest document first?",
+            "What would go wrong if the general text were split into train only?",
+            "Why 80% and not 100% for the paragraph threshold?",
+            "Could the paragraph dedupe drop a table that differs only in numbers?", or
+            "Should the MCP server strip footers too?"
+        </div>
+
+        <nav class="lesson-nav">
+            <a href="llm-03-toy-lora-run.html">← Model Lesson 3: The Toy LoRA Run</a>
+            <a href="../PLAN.md">Plan: step 4, continued pretraining on the Spark →</a>
+        </nav>
+
+    </div>
+</body>
+
+</html>
