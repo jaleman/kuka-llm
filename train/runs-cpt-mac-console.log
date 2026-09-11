@@ -1,0 +1,16 @@
+free disk:  253 GB
+HF cache:   4.4G  (/Users/labanlaro/Projects/kuka-llm/.hf-cache)
+ok
+== BEFORE (reusing train/runs/cpt-mac/before.txt) ==
+== TRAIN ==
+Loading configuration file train/cpt/lora-mac-v2.yaml
+Loading pretrained model
+Fetching 9 files:   0%|          | 0/9 [00:00<?, ?it/s]Fetching 9 files: 100%|██████████| 9/9 [00:00<00:00, 3761.33it/s]
+Loading datasets
+Training
+Loading fine-tuned weights from train/runs/cpt-mac-run1/adapters/0000100_adapters.safetensors
+Trainable parameters: 1.013% (17.433M/1720.575M)
+Starting training..., iters: 600
+Calculating loss...: 0it [00:00, ?it/s]Calculating loss...: 1it [00:03,  3.39s/it]Calculating loss...: 2it [00:07,  3.53s/it]Calculating loss...: 3it [00:07,  2.34s/it]Calculating loss...: 4it [00:09,  2.15s/it]Calculating loss...: 5it [00:12,  2.22s/it]Calculating loss...: 6it [00:14,  2.26s/it]Calculating loss...: 7it [00:17,  2.51s/it]Calculating loss...: 8it [00:19,  2.47s/it]Calculating loss...: 9it [00:24,  3.04s/it]Calculating loss...: 10it [00:26,  2.74s/it]Calculating loss...: 11it [00:29,  2.81s/it]Calculating loss...: 12it [00:33,  3.24s/it]Calculating loss...: 13it [00:34,  2.72s/it]Calculating loss...: 14it [00:38,  2.90s/it]Calculating loss...: 15it [00:39,  2.50s/it]Calculating loss...: 16it [00:42,  2.47s/it]Calculating loss...: 17it [00:44,  2.45s/it]Calculating loss...: 18it [00:47,  2.66s/it]Calculating loss...: 18it [00:47,  2.66s/it]
+Iter 1: Val loss 2.016, Val took 47.808s
+Iter 10: Train loss 1.864, Learning Rate 1.200e-05, It/sec 0.155, Tokens/sec 193.514, Trained Tokens 12501, Peak mem 9.756 GB

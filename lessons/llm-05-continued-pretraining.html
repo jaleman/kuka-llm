@@ -73,8 +73,8 @@
                 <tr>
                     <td>Learning rate</td>
                     <td>Constant 1e-4</td>
-                    <td>Warmup 30 steps → 1e-4 → cosine decay to 1e-5</td>
-                    <td>See below</td>
+                    <td>Run 1: warmup → 1e-4 → cosine. Run 2: warmup → 3e-5 → cosine</td>
+                    <td>Run 1 destabilised; see "The instability finding"</td>
                 </tr>
                 <tr>
                     <td>Effective batch</td>
@@ -165,37 +165,129 @@
             long tables stay intact.
         </p>
 
-        <h2>Reading the validation curve</h2>
+        <h2>The instability finding: run 1</h2>
+
+        <p>
+            The first attempt used the toy run's peak learning rate, 1e-4,
+            with the bigger adapter. For 150 iterations it looked right. Then
+            validation loss turned around and climbed for two checkpoints in a
+            row, and the run was stopped at iteration 250.
+        </p>
 
         <table class="comparison-table">
             <thead>
                 <tr>
                     <th>Iteration</th>
-                    <th>Train loss</th>
+                    <th>Train loss (10-step avg)</th>
                     <th>Validation loss</th>
                     <th>Learning rate</th>
                 </tr>
             </thead>
             <tbody>
                 <tr><td>1</td><td>–</td><td>2.379</td><td>warmup</td></tr>
-                <tr><td>50</td><td>–</td><td>2.029</td><td>1e-4</td></tr>
-                <tr><td>100</td><td>2.102</td><td>2.012</td><td>1e-4</td></tr>
-                <!-- RESULTS: rows for 200..700 and test loss are filled in when the run finishes -->
+                <tr><td>50</td><td>2.19</td><td>2.029</td><td>1.0e-4</td></tr>
+                <tr><td>100</td><td>2.10</td><td><strong>2.012</strong></td><td>1.0e-4</td></tr>
+                <tr><td>150</td><td>2.05</td><td>2.012</td><td>9.9e-5</td></tr>
+                <tr><td>200</td><td>1.91</td><td>2.213 ↑</td><td>9.8e-5</td></tr>
+                <tr><td>250</td><td>2.19</td><td>2.315 ↑</td><td>9.6e-5</td></tr>
+            </tbody>
+        </table>
+
+        <h3>Diagnosing it</h3>
+
+        <p>
+            A rising validation loss has two common causes, and they call for
+            opposite fixes, so the first job is to tell them apart by looking
+            at the training loss alongside.
+        </p>
+
+        <ul>
+            <li><strong>Overfitting.</strong> Training loss keeps falling while
+                validation rises. The model is memorising the training rows
+                and losing the ability to generalise. Fix: fewer epochs, more
+                data, more regularisation.</li>
+            <li><strong>Instability.</strong> Training loss stops falling and
+                bounces while validation rises. The optimizer is taking steps
+                too large for the landscape, overshooting good regions and
+                scattering the weights. Fix: lower the learning rate.</li>
+        </ul>
+
+        <p>
+            Run 1's training loss between iterations 150 and 250 was 2.05,
+            1.94, 2.12, 2.36, 2.02, 1.91, 1.98, 2.17, 1.80, 1.89, 2.19: flat,
+            not falling. That is instability. It also explains why it showed up
+            when it did. The toy run tolerated 1e-4 because its adapter was
+            tiny (rank 8, top 16 layers, 2.9M parameters). This adapter is six
+            times larger and touches every layer, so each optimizer step moves
+            the model's behaviour six times as far. The same rate that was
+            gentle on the toy run was violent here. Cosine decay would have
+            brought the rate down eventually, but at iteration 250 it was still
+            at 9.6e-5, and the damage was accumulating faster than the decay.
+        </p>
+
+        <p>
+            The rule that falls out: <em>when you grow the adapter, shrink the
+            learning rate.</em> Rank, layer count, and peak rate are not
+            independent knobs.
+        </p>
+
+        <h3>The fix: resume, do not restart</h3>
+
+        <p>
+            The iteration 100 checkpoint had the best validation loss and was
+            saved to disk. Run 2 loads that adapter and continues from it with
+            a peak rate of 3e-5, a third of run 1's, a shorter warmup, and a
+            cosine decay over 600 more iterations down to 3e-6. Nothing else
+            changed, so the comparison isolates the one variable. The resumed
+            run's first validation pass read 2.016, confirming it started
+            where run 1 was at its best rather than from scratch.
+        </p>
+
+        <pre><code># train/cpt/lora-mac-v2.yaml, the lines that differ from run 1
+iters: 600
+lr_schedule:
+  name: cosine_decay
+  warmup: 10
+  arguments: [3.0e-5, 600, 3.0e-6]
+resume_adapter_file: train/runs/cpt-mac-run1/adapters/0000100_adapters.safetensors</code></pre>
+
+        <p>
+            Java lens: this is the reason you checkpoint. A long batch job
+            that fails at 40% should resume from its last good state, not rerun
+            from zero. <code>save_every: 100</code> is the training equivalent
+            of committing the job's progress.
+        </p>
+
+        <h2>Reading the validation curve: run 2</h2>
+
+        <table class="comparison-table">
+            <thead>
+                <tr>
+                    <th>Iteration (run 2)</th>
+                    <th>Train loss</th>
+                    <th>Validation loss</th>
+                    <th>Learning rate</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr><td>1 (= run 1 iter 100)</td><td>–</td><td>2.016</td><td>warmup</td></tr>
+                <!-- RESULTS: rows for 50..600 and test loss are filled in when run 2 finishes -->
             </tbody>
         </table>
 
         <p>
-            Two things stand out already. The starting loss, 2.379, is higher
-            than the toy run's 2.108 even though the model is bigger. That is
-            the cleaning working: the YAML front matter was the most
-            predictable text in the old chunks, and it is gone, and 15% of the
-            validation set is now general web text the adapter is not
-            optimising for. A higher starting loss on a harder, more honest
-            dataset is the right trade. Second, the drop from 2.379 to 2.029 by
-            iteration 50 happened while the learning rate was still warming up,
-            which says the adapter finds the domain's surface statistics almost
-            immediately. Everything after that is slower, and that slow part is
-            where facts get absorbed.
+            Two things were already visible in run 1 and carry over. The
+            starting loss, 2.379, is higher than the toy run's 2.108 even
+            though the model is bigger. That is the cleaning working: the YAML
+            front matter was the most predictable text in the old chunks and it
+            is gone, and 15% of the validation set is now general web text the
+            adapter is not optimising for. A higher starting loss on a harder,
+            more honest dataset is the right trade. Second, the drop from 2.379
+            to 2.029 by iteration 50 happened while the learning rate was still
+            warming up, which says the adapter finds the domain's surface
+            statistics almost immediately. Everything after that is slower, and
+            that slow part is where facts get absorbed, and where the rate has
+            to be gentle enough not to undo them.
         </p>
 
         <h2>Before and after</h2>
@@ -235,7 +327,7 @@ maybe a handheld device, given the "3000P" suffix...</code></pre>
             <tbody>
                 <tr><td><code>lora_parameters.rank: 16</code></td><td><code>LoraConfig(r=16, lora_alpha=32)</code></td></tr>
                 <tr><td><code>num_layers: -1</code> (all linear layers)</td><td><code>target_modules="all-linear"</code></td></tr>
-                <tr><td><code>lr_schedule: cosine_decay, warmup: 30</code></td><td><code>lr_scheduler_type="cosine", warmup_steps=30</code></td></tr>
+                <tr><td><code>lr_schedule: cosine_decay</code>, peak 3e-5</td><td><code>lr_scheduler_type="cosine", learning_rate=3e-5, warmup_steps=30</code>. Start here, not at 1e-4</td></tr>
                 <tr><td><code>grad_accumulation_steps: 2</code></td><td><code>gradient_accumulation_steps=2</code></td></tr>
                 <tr><td><code>grad_checkpoint: true</code></td><td><code>gradient_checkpointing=True</code></td></tr>
                 <tr><td><code>max_seq_length: 2048</code></td><td><code>max_seq_length=4096</code> (the Spark can afford it)</td></tr>
@@ -253,7 +345,7 @@ maybe a handheld device, given the "3000P" suffix...</code></pre>
 
         <pre><code>cd ~/Projects/kuka-llm
 source .venv/bin/activate
-nohup train/cpt/run-mac.sh &gt; train/runs-cpt-mac-console.log 2&gt;&amp;1 &amp;      # ~90 min
+CFG=train/cpt/lora-mac-v2.yaml nohup train/cpt/run-mac.sh &gt; train/runs-cpt-mac-console.log 2&gt;&amp;1 &amp;   # ~70 min
 grep -E "Val loss|Iter [0-9]+0:" train/runs-cpt-mac-console.log | tail
 
 # talk to the adapter at any checkpoint
@@ -266,6 +358,7 @@ python -m mlx_lm generate --model mlx-community/Qwen3-1.7B-bf16 \
             "Why is the starting loss higher on the cleaned data?",
             "What would rank 64 buy, and what would it cost?",
             "Why cosine and not a linear decay?",
+            "How would I have caught the instability before iteration 200?",
             "How do I decide between one epoch and three on the Spark?", or
             "If the after-generations are still wrong, what does that tell us?"
         </div>
