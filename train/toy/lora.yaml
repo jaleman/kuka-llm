@@ -1,0 +1,21 @@
+# Step 2 toy run: LoRA on a 0.6B base, Apple Silicon via mlx_lm.
+# Goal is not a good model; it is to watch loss fall and learn the knobs.
+model: mlx-community/Qwen3-0.6B-bf16
+train: true
+data: data/out/toy
+fine_tune_type: lora
+optimizer: adamw
+num_layers: 16          # adapt the top 16 of 28 transformer blocks
+batch_size: 2
+iters: 300
+learning_rate: 1.0e-4   # typical LoRA rate; 10x higher than full fine-tuning
+max_seq_length: 2048
+val_batches: 10
+steps_per_report: 10
+steps_per_eval: 50
+save_every: 100
+adapter_path: train/runs/toy/adapters
+grad_checkpoint: true   # trade compute for memory; matters on 16 GB
+seed: 0
+test: true
+test_batches: -1

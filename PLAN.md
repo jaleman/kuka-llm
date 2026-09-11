@@ -28,7 +28,7 @@ runnable on an NVIDIA DGX Spark.
 | Step | Name | Status | Notes |
 |------|------|--------|-------|
 | 1 | Token count and corpus profile | complete | `data/count_tokens.py` |
-| 2 | Foundations toy run (tiny model, watch loss fall) | not started | proves the GPU stack works |
+| 2 | Foundations toy run (tiny model, watch loss fall) | in progress | proves the GPU stack works |
 | 3 | Build continued-pretraining dataset (raw text + 10–20% general mix) | not started | |
 | 4 | Continued pretraining run (LoRA, 8B base, 3–5 epochs) | not started | |
 | 5 | Synthetic Q&A generation (5–10 pairs per chunk via teacher model) | not started | |
