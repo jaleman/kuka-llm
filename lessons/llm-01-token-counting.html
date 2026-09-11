@@ -1,0 +1,317 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Model Lesson 1: Counting Tokens — Measuring the Corpus Before Training</title>
+    <link rel="stylesheet" href="../assets/style.css">
+</head>
+
+<body>
+    <div class="container">
+
+        <header class="lesson-header">
+            <div class="lesson-number">Model Lesson 1</div>
+            <h1>Counting Tokens — Measuring the Corpus Before Training</h1>
+            <div class="lesson-meta">
+                <span>Plan step 1</span>
+                <span>kuka-llm: baking KUKA knowledge into a model</span>
+            </div>
+        </header>
+
+        <h2>Why the first step is a measurement</h2>
+
+        <p>
+            The MCP server project never had to care how big the KUKA corpus was.
+            Search runs over chunks, and a chunk is small by construction. Training a
+            model is different: every decision downstream is priced in
+            <strong>tokens</strong>. How long a run takes, how many epochs are safe,
+            what context window the training examples must fit in, and how much
+            general text to mix in so the model does not forget English, all start
+            from one number. So step 1 is a script that produces that number and a
+            few others we will keep coming back to.
+        </p>
+
+        <p>
+            The result was a surprise. Guessing from the usual rule of thumb (about
+            1.3 tokens per English word) the corpus should have been around 1.6
+            million tokens. The real figure is 2.61 million. Technical manuals are
+            full of tables, part numbers, and units, and those tokenize badly.
+            The lesson in one line: <em>measure with the tokenizer you will train
+            with, never estimate.</em>
+        </p>
+
+        <h2>What a tokenizer is</h2>
+
+        <p>
+            A language model does not read characters or words. It reads integers
+            drawn from a fixed vocabulary of roughly 150,000 <em>subword</em> pieces.
+            Common words are one piece. Rare words are split into several.
+            <code>the</code> is one token; <code>KMP1500P</code> is probably five.
+            The algorithm that learned the vocabulary is called byte-pair encoding,
+            and every model family ships its own. That is why the script asks for the
+            Qwen3-8B tokenizer by name: the count for a Llama tokenizer would differ
+            by a few percent.
+        </p>
+
+        <p>
+            The nearest Java idea is not <code>StringTokenizer</code>, which splits
+            on delimiters. It is closer to a dictionary-based compressor: a fixed
+            table of frequent byte sequences, and the encoder greedily replaces the
+            input with table indices. Longer, more common sequences get their own
+            entry, so the token count is a rough measure of how "ordinary" the text
+            is to the model.
+        </p>
+
+        <h2>The script, Python next to Java</h2>
+
+        <p>
+            Training tooling lives in Python, so this project switches languages.
+            The script in <code>data/count_tokens.py</code> does four things: load a
+            tokenizer, walk the corpus, group chunks back into their source
+            documents, and print a report plus a CSV. Below are the pieces that look
+            unfamiliar from Java, with the equivalent Java alongside.
+        </p>
+
+        <h3>1. Loading the tokenizer with a graceful fallback</h3>
+
+        <p><strong>Python:</strong></p>
+        <pre><code>def load_tokenizer(name: str):
+    """Return (count_fn, description). Falls back gracefully when offline."""
+    try:
+        from tokenizers import Tokenizer
+
+        tok = Tokenizer.from_pretrained(name)
+        return (lambda s: len(tok.encode(s, add_special_tokens=False).ids), name)
+    except Exception as exc:
+        print(f"warning: could not load tokenizer '{name}' ({exc})", file=sys.stderr)
+    # ... try tiktoken, then a chars/4 heuristic ...
+    return (lambda s: len(s) // 4, "chars/4 heuristic (fallback)")</code></pre>
+
+        <p><strong>Java equivalent:</strong></p>
+        <pre><code>record Counter(ToIntFunction&lt;String&gt; count, String description) {}
+
+static Counter loadTokenizer(String name) {
+    try {
+        Tokenizer tok = Tokenizer.fromPretrained(name);   // e.g. DJL's HuggingFaceTokenizer
+        return new Counter(s -&gt; tok.encode(s).getIds().length, name);
+    } catch (Exception exc) {
+        System.err.println("warning: could not load tokenizer '" + name + "' (" + exc + ")");
+    }
+    return new Counter(s -&gt; s.length() / 4, "chars/4 heuristic (fallback)");
+}</code></pre>
+
+        <p>
+            Three things to notice. A Python function can return a tuple, which is
+            an anonymous record; Java needs a named <code>record</code>. The
+            <code>import</code> inside the <code>try</code> is deliberate: if the
+            package is missing, that is just another exception to fall through. And
+            <code>lambda s: ...</code> is Java's <code>s -&gt; ...</code>, with the
+            same closure-over-locals behaviour.
+        </p>
+
+        <h3>2. Walking the corpus and grouping by document</h3>
+
+        <p><strong>Python:</strong></p>
+        <pre><code>PAGE_SUFFIX = re.compile(r"-p\d{3}-\d{3}$")
+
+rows: list[tuple[str, str, int, int, int]] = []
+per_doc: dict[str, list[int]] = defaultdict(list)
+for f in sorted(corpus.glob("*.md")):
+    text = f.read_text(encoding="utf-8", errors="replace")
+    doc = PAGE_SUFFIX.sub("", f.stem)          # "ba_kmp_600p-p001-005" -&gt; "ba_kmp_600p"
+    n_tok = count(text)
+    rows.append((f.name, doc, len(text), len(text.split()), n_tok))
+    per_doc[doc].append(n_tok)</code></pre>
+
+        <p><strong>Java equivalent:</strong></p>
+        <pre><code>static final Pattern PAGE_SUFFIX = Pattern.compile("-p\\d{3}-\\d{3}$");
+
+record Row(String file, String doc, int chars, int words, int tokens) {}
+List&lt;Row&gt; rows = new ArrayList&lt;&gt;();
+Map&lt;String, List&lt;Integer&gt;&gt; perDoc = new HashMap&lt;&gt;();
+
+try (Stream&lt;Path&gt; files = Files.list(corpus)) {
+    for (Path f : files.filter(p -&gt; p.toString().endsWith(".md")).sorted().toList()) {
+        String text = Files.readString(f, StandardCharsets.UTF_8);
+        String stem = f.getFileName().toString().replaceFirst("\\.md$", "");
+        String doc = PAGE_SUFFIX.matcher(stem).replaceFirst("");
+        int nTok = counter.count().applyAsInt(text);
+        rows.add(new Row(f.getFileName().toString(), doc, text.length(),
+                         text.split("\\s+").length, nTok));
+        perDoc.computeIfAbsent(doc, k -&gt; new ArrayList&lt;&gt;()).add(nTok);
+    }
+}</code></pre>
+
+        <p>
+            <code>defaultdict(list)</code> is exactly
+            <code>computeIfAbsent(k, k -&gt; new ArrayList&lt;&gt;())</code> baked into
+            the map. <code>pathlib.Path</code> plays the role of
+            <code>java.nio.file.Path</code> plus <code>Files</code> in one object.
+            The type hints on <code>rows</code> and <code>per_doc</code> are
+            documentation only: Python will not stop you putting the wrong thing in,
+            which is the biggest mental shift coming from Java or Rust.
+        </p>
+
+        <h3>3. Ranking documents and formatting the table</h3>
+
+        <p><strong>Python:</strong></p>
+        <pre><code>ranked = sorted(per_doc.items(), key=lambda kv: sum(kv[1]), reverse=True)[:args.top]
+width = max(len(d) for d, _ in ranked)
+for doc, toks in ranked:
+    s = sum(toks)
+    print(f"{doc:&lt;{width}}  {len(toks):&gt;6}  {s:&gt;10,}  {100 * s / total_tokens:&gt;5.1f}%")</code></pre>
+
+        <p><strong>Java equivalent:</strong></p>
+        <pre><code>List&lt;Map.Entry&lt;String, List&lt;Integer&gt;&gt;&gt; ranked = perDoc.entrySet().stream()
+    .sorted(Comparator.comparingInt((Map.Entry&lt;String, List&lt;Integer&gt;&gt; e) -&gt;
+        e.getValue().stream().mapToInt(Integer::intValue).sum()).reversed())
+    .limit(top)
+    .toList();
+int width = ranked.stream().mapToInt(e -&gt; e.getKey().length()).max().orElse(0);
+for (var e : ranked) {
+    int s = e.getValue().stream().mapToInt(Integer::intValue).sum();
+    System.out.printf("%-" + width + "s  %6d  %,10d  %5.1f%%%n",
+        e.getKey(), e.getValue().size(), s, 100.0 * s / totalTokens);
+}</code></pre>
+
+        <p>
+            The slice <code>[:args.top]</code> is <code>.limit(top)</code>.
+            The f-string <code>{s:&gt;10,}</code> means right-align in 10 columns
+            with thousands separators, the same as <code>%,10d</code>.
+            <code>for doc, toks in ranked</code> unpacks each entry in place, which
+            Java only gets with a record pattern in a <code>for</code> over records.
+        </p>
+
+        <h2>What the numbers said</h2>
+
+        <table class="comparison-table">
+            <thead>
+                <tr>
+                    <th>Metric</th>
+                    <th>Value</th>
+                    <th>Why it matters</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <td>Documents / chunks</td>
+                    <td>108 / 2,012</td>
+                    <td>Chunks are the unit the MCP server made; documents are the unit we dedupe on.</td>
+                </tr>
+                <tr>
+                    <td>Tokens (Qwen3-8B)</td>
+                    <td>2,613,334</td>
+                    <td>One epoch of continued pretraining. Five epochs is about 13M tokens seen.</td>
+                </tr>
+                <tr>
+                    <td>Tokens per word</td>
+                    <td>2.17</td>
+                    <td>Far above the 1.3 rule of thumb. Tables and part numbers are expensive.</td>
+                </tr>
+                <tr>
+                    <td>Median chunk</td>
+                    <td>1,269 tokens</td>
+                    <td>Fits a 2k or 4k training window with room for an instruction.</td>
+                </tr>
+                <tr>
+                    <td>Chunks over 4,096</td>
+                    <td>1</td>
+                    <td>Needs re-splitting before step 3, or it gets truncated silently.</td>
+                </tr>
+                <tr>
+                    <td>Top three documents</td>
+                    <td>32% of tokens</td>
+                    <td>All three are versions 2.14, 2.15, 2.16 of the same fleet manual.</td>
+                </tr>
+            </tbody>
+        </table>
+
+        <p>
+            That last row is the finding that changes the plan. The corpus contains
+            near-duplicate documents: three releases of the fleet manual, and several
+            KMP 600P variants whose chunk counts and token totals are identical to the
+            byte. Search does not mind duplicates. Training does: repeated text is
+            seen three times per epoch, so the model overweights it and learns to
+            parrot. Step 3 must dedupe by content hash or down-weight those
+            documents. We would not have known this without the per-document view.
+        </p>
+
+        <h2>Project mechanics that differ from the Rust repo</h2>
+
+        <table class="comparison-table">
+            <thead>
+                <tr>
+                    <th>Java / Rust habit</th>
+                    <th>Python equivalent in this repo</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <td><code>pom.xml</code> / <code>Cargo.toml</code></td>
+                    <td><code>requirements.txt</code>, one line per dependency, installed with <code>pip</code></td>
+                </tr>
+                <tr>
+                    <td>Maven local repo / <code>target/</code></td>
+                    <td><code>.venv/</code>, a per-project interpreter with its own packages, gitignored</td>
+                </tr>
+                <tr>
+                    <td><code>public static void main</code> / <code>fn main</code></td>
+                    <td><code>if __name__ == "__main__": sys.exit(main())</code>, so the file also imports cleanly as a module</td>
+                </tr>
+                <tr>
+                    <td>picocli / <code>clap</code></td>
+                    <td><code>argparse</code> from the standard library</td>
+                </tr>
+                <tr>
+                    <td>try-with-resources</td>
+                    <td><code>with out.open("w") as fh:</code></td>
+                </tr>
+                <tr>
+                    <td>Compiler-checked types</td>
+                    <td>Type hints, checked only if you run a tool like <code>mypy</code></td>
+                </tr>
+                <tr>
+                    <td>Javadoc / <code>///</code> doc comments</td>
+                    <td>A docstring as the first statement of the module or function; <code>--help</code> prints the module one</td>
+                </tr>
+                <tr>
+                    <td><code>~/.m2</code> / <code>~/.cargo/registry</code></td>
+                    <td><code>HF_HOME</code>, the Hugging Face model cache, pointed at <code>.hf-cache/</code> in this repo</td>
+                </tr>
+            </tbody>
+        </table>
+
+        <h2>Running it</h2>
+
+        <pre><code>cd ~/Projects/kuka-llm
+bin/disk-check.sh                       # free space vs the 20 GB floor
+source .venv/bin/activate
+python data/count_tokens.py ../kuka-mcp/knowledge
+python data/count_tokens.py ../kuka-mcp/knowledge --tokenizer meta-llama/Llama-3.1-8B --top 5</code></pre>
+
+        <p>
+            The second command shows why the tokenizer name is a parameter: it is
+            the only way to see how much the count moves between model families
+            before committing to a base model.
+        </p>
+
+        <div class="ask-teacher">
+            <strong>Questions?</strong> Ask Claude directly. Good questions:
+            "Why does a part number cost five tokens?",
+            "Why is the tokenizer loaded inside a try block?",
+            "How would I dedupe the fleet manual versions without losing the
+            differences between them?", or
+            "What would the count look like with the Llama tokenizer?"
+        </div>
+
+        <nav class="lesson-nav">
+            <a href="../../kuka-mcp/lessons/refactor-08-page-chunking.html">← Related: kuka-mcp Appendix 8, Page Chunking (where these chunks came from)</a>
+            <a href="../PLAN.md">Plan: step 2, toy training run →</a>
+        </nav>
+
+    </div>
+</body>
+
+</html>

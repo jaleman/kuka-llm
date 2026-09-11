@@ -1,0 +1,8 @@
+# Install inside an NVIDIA NGC PyTorch container on the DGX Spark.
+# torch comes from the container; do not pip-install it here.
+transformers>=4.45
+peft>=0.13
+trl>=0.11
+datasets>=3.0
+accelerate>=1.0
+bitsandbytes>=0.44

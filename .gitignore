@@ -1,0 +1,28 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Generated datasets, adapters, weights — never commit these
+data/out/
+train/runs/
+train/checkpoints/
+serve/models/
+*.safetensors
+*.gguf
+*.bin
+*.pt
+*.arrow
+*.parquet
+*.jsonl
+*.csv
+!eval/questions/*.jsonl
+
+# Hugging Face cache if someone points HF_HOME here
+.hf-cache/
+
+# Editors / OS
+.DS_Store
+.idea/
+.vscode/
