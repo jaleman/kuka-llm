@@ -28,7 +28,7 @@ runnable on an NVIDIA DGX Spark.
 | Step | Name | Status | Notes |
 |------|------|--------|-------|
 | 1 | Token count and corpus profile | complete | `data/count_tokens.py` |
-| 2 | Foundations toy run (tiny model, watch loss fall) | in progress | proves the GPU stack works |
+| 2 | Foundations toy run (tiny model, watch loss fall) | complete | Mac mini, mlx_lm, Qwen3-0.6B LoRA: val loss 2.11→1.26, test ppl 4.3; lesson 3 |
 | 3 | Build continued-pretraining dataset (raw text + 10–20% general mix) | not started | Redundancy investigated early (lesson 2): strip front matter (17.6% of tokens), drop byte-identical 600P-U-D PDF, keep fleet 2.16 only, collapse reflector-note pair. Target: unique-text > 90%. |
 | 4 | Continued pretraining run (LoRA, 8B base, 3–5 epochs) | not started | |
 | 5 | Synthetic Q&A generation (5–10 pairs per chunk via teacher model) | not started | |
@@ -67,4 +67,10 @@ runnable on an NVIDIA DGX Spark.
 - 2026-09-11 — Step 2 started on branch `step-2-toy-run`: LoRA on
   Qwen3-0.6B-bf16 via mlx_lm, 300 iters, 270 train chunks. Lesson 0
   (concepts primer) added as required reading.
+- 2026-09-11 — Step 2 complete on branch `step-2-toy-run`. Qwen3-0.6B-bf16
+  LoRA (0.48% params), 300 iters, 20 min, peak 7.1 GB. Val loss 2.108 → 1.261,
+  test perplexity 4.32. Style transferred, facts did not (model guessed "GPS"),
+  train/val gap opened after iter 200. Results in `train/toy/results.md`,
+  lesson 3 written. Lessons 0–3 now exist. Awaiting user review/merge;
+  no GitHub remote exists yet for this repo.
 
