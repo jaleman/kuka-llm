@@ -29,8 +29,8 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("corpus", nargs="?", default="../kuka-mcp/knowledge")
     ap.add_argument("--n", type=int, default=300, help="chunks to sample in total")
-    ap.add_argument("--max-chars", type=int, default=10_000,
-                    help="skip chunks longer than this (~1,800 tokens; keeps us inside a 2k window)")
+    ap.add_argument("--max-chars", type=int, default=8_500,
+                    help="skip chunks longer than this (~1,600 tokens; keeps every chunk inside the 2k window)")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--out", default="data/out/toy")
     args = ap.parse_args()

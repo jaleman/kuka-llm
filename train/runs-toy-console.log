@@ -1,10 +1,10 @@
-free disk:  262 GB
-HF cache:    11M  (/Users/labanlaro/Projects/kuka-llm/.hf-cache)
+free disk:  260 GB
+HF cache:   1.1G  (/Users/labanlaro/Projects/kuka-llm/.hf-cache)
 ok
 test    15 chunks     97,421 chars
-valid   15 chunks    106,512 chars
-train  270 chunks  1,927,925 chars
-skipped 0 chunks outside [200, 10000] chars; wrote data/out/toy/
+valid   15 chunks    103,242 chars
+train  270 chunks  1,867,696 chars
+skipped 35 chunks outside [200, 8500] chars; wrote data/out/toy/
 == BEFORE (base model) ==
 ==========
 <think>
@@ -12,18 +12,19 @@ Okay, so I need to figure out what the KMP 1500P is. It's an autonomous mobile p
 
 First, I should think about the typical steps before starting an autonomous vehicle. Usually, you have to check the vehicle's status, maybe get the necessary licenses, and ensure
 ==========
-Prompt: 31 tokens, 39.742 tokens-per-sec
-Generation: 120 tokens, 74.198 tokens-per-sec
+Prompt: 31 tokens, 527.807 tokens-per-sec
+Generation: 120 tokens, 75.123 tokens-per-sec
 Peak memory: 1.278 GB
 == TRAIN ==
 Loading configuration file train/toy/lora.yaml
 Loading pretrained model
-Fetching 9 files:   0%|          | 0/9 [00:00<?, ?it/s]Fetching 9 files: 100%|██████████| 9/9 [00:00<00:00, 3333.22it/s]
+Fetching 9 files:   0%|          | 0/9 [00:00<?, ?it/s]Fetching 9 files: 100%|██████████| 9/9 [00:00<00:00, 3880.82it/s]
 Loading datasets
 Training
 Trainable parameters: 0.484% (2.884M/596.050M)
 Starting training..., iters: 300
-Calculating loss...:   0%|          | 0/7 [00:00<?, ?it/s]Calculating loss...:  14%|█▍        | 1/7 [00:02<00:12,  2.03s/it]Calculating loss...:  29%|██▊       | 2/7 [00:03<00:08,  1.73s/it]Calculating loss...:  43%|████▎     | 3/7 [00:05<00:06,  1.64s/it]Calculating loss...:  57%|█████▋    | 4/7 [00:06<00:05,  1.70s/it]Calculating loss...:  71%|███████▏  | 5/7 [00:08<00:03,  1.60s/it]Calculating loss...:  86%|████████▌ | 6/7 [00:10<00:01,  1.69s/it]Calculating loss...: 100%|██████████| 7/7 [00:10<00:00,  1.41s/it]Calculating loss...: 100%|██████████| 7/7 [00:11<00:00,  1.57s/it]
-Iter 1: Val loss 2.073, Val took 11.032s
-[WARNING] Some sequences are longer than 2048 tokens. The longest sentence 2167 will be truncated to 2048. Consider pre-splitting your data to save memory.
-Iter 10: Train loss 2.036, Learning Rate 1.000e-04, It/sec 0.216, Tokens/sec 552.317, Trained Tokens 25567, Peak mem 6.830 GB
+Calculating loss...:   0%|          | 0/7 [00:00<?, ?it/s]Calculating loss...:  14%|█▍        | 1/7 [00:01<00:10,  1.81s/it]Calculating loss...:  29%|██▊       | 2/7 [00:03<00:08,  1.78s/it]Calculating loss...:  43%|████▎     | 3/7 [00:05<00:06,  1.65s/it]Calculating loss...:  57%|█████▋    | 4/7 [00:05<00:03,  1.32s/it]Calculating loss...:  71%|███████▏  | 5/7 [00:07<00:02,  1.34s/it]Calculating loss...:  86%|████████▌ | 6/7 [00:08<00:01,  1.20s/it]Calculating loss...: 100%|██████████| 7/7 [00:09<00:00,  1.27s/it]Calculating loss...: 100%|██████████| 7/7 [00:09<00:00,  1.37s/it]
+Iter 1: Val loss 2.108, Val took 9.601s
+Iter 10: Train loss 2.148, Learning Rate 1.000e-04, It/sec 0.271, Tokens/sec 640.091, Trained Tokens 23626, Peak mem 6.081 GB
+Iter 20: Train loss 1.784, Learning Rate 1.000e-04, It/sec 0.259, Tokens/sec 627.051, Trained Tokens 47827, Peak mem 6.749 GB
+Iter 30: Train loss 1.787, Learning Rate 1.000e-04, It/sec 0.275, Tokens/sec 671.454, Trained Tokens 72235, Peak mem 6.749 GB

@@ -29,7 +29,7 @@ runnable on an NVIDIA DGX Spark.
 |------|------|--------|-------|
 | 1 | Token count and corpus profile | complete | `data/count_tokens.py` |
 | 2 | Foundations toy run (tiny model, watch loss fall) | in progress | proves the GPU stack works |
-| 3 | Build continued-pretraining dataset (raw text + 10–20% general mix) | not started | |
+| 3 | Build continued-pretraining dataset (raw text + 10–20% general mix) | not started | Redundancy investigated early (lesson 2): strip front matter (17.6% of tokens), drop byte-identical 600P-U-D PDF, keep fleet 2.16 only, collapse reflector-note pair. Target: unique-text > 90%. |
 | 4 | Continued pretraining run (LoRA, 8B base, 3–5 epochs) | not started | |
 | 5 | Synthetic Q&A generation (5–10 pairs per chunk via teacher model) | not started | |
 | 6 | Supervised fine-tuning on Q&A | not started | |
@@ -58,3 +58,13 @@ runnable on an NVIDIA DGX Spark.
 - 2026-09-11 — Step 1 lesson written: `lessons/llm-01-token-counting.html`
   (Python-vs-Java side by side, findings table, dedupe note). Step 1 flips to
   `complete`: committed as the initial commit on master.
+- 2026-09-11 — Redundancy investigation at user request (`data/find_duplicates.py`,
+  lesson 2). 40% of corpus tokens are repeated text: three fleet-manual
+  releases (547k tokens redundant), a byte-identical duplicate PDF
+  (`BA_KMP_600P-U-D_series_en.pdf` == `BA_KMP_600P_series_en_V1.pdf`, 81k),
+  and YAML front matter on every chunk (461k, 17.6%). Rules recorded in the
+  step 3 row. Upstream fix for kuka-mcp: remove the duplicate PDF.
+- 2026-09-11 — Step 2 started on branch `step-2-toy-run`: LoRA on
+  Qwen3-0.6B-bf16 via mlx_lm, 300 iters, 270 train chunks. Lesson 0
+  (concepts primer) added as required reading.
+

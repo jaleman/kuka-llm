@@ -1,0 +1,226 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Model Lesson 2: Corpus Redundancy — Finding and Removing Repeated Text</title>
+    <link rel="stylesheet" href="../assets/style.css">
+</head>
+
+<body>
+    <div class="container">
+
+        <header class="lesson-header">
+            <div class="lesson-number">Model Lesson 2</div>
+            <h1>Corpus Redundancy — Finding and Removing Repeated Text</h1>
+            <div class="lesson-meta">
+                <span>Plan step 3 (investigated early)</span>
+                <span>kuka-llm: baking KUKA knowledge into a model</span>
+            </div>
+        </header>
+
+        <h2>Why search tolerates duplicates and training does not</h2>
+
+        <p>
+            The kuka-mcp server never cared that the corpus held three versions
+            of the fleet manual. A search returns the best-matching chunk and
+            stops; a duplicate simply loses the ranking to its twin. Training is
+            the opposite. Every token in the training set is seen on every epoch,
+            so a document present three times is learned three times as hard.
+            The model overweights it, and with enough repetition starts to
+            reproduce it verbatim instead of generalising from it. That is
+            overfitting by construction, before any hyperparameter is touched.
+        </p>
+
+        <p>
+            Lesson 1 showed the symptom: the top three documents held a third of
+            all tokens and were all the same manual. This lesson measures the
+            problem properly with <code>data/find_duplicates.py</code> and sets
+            the rules step 3 will apply.
+        </p>
+
+        <h2>Three kinds of repetition</h2>
+
+        <p>
+            The script checks for three distinct things, because each needs a
+            different fix.
+        </p>
+
+        <ol>
+            <li><strong>Exact duplicate chunks.</strong> Same bytes under two
+                names. Found by hashing each file. The corpus has none, which
+                tells us the extractor is not the problem.</li>
+            <li><strong>Near-duplicate documents.</strong> Two manuals that are
+                mostly the same text with small differences. Found by comparing
+                sets of word shingles.</li>
+            <li><strong>Boilerplate lines.</strong> Short lines that recur on
+                every page or in every file: headers, footers, metadata. Found
+                by counting lines across the whole corpus.</li>
+        </ol>
+
+        <h2>Measuring near-duplicates with shingles</h2>
+
+        <p>
+            A <strong>shingle</strong> is a run of K consecutive words. Turn each
+            document into the set of hashes of all its 8-word shingles, and two
+            documents can be compared with <strong>Jaccard similarity</strong>:
+            the size of the intersection divided by the size of the union. Two
+            identical documents score 1.0; two unrelated ones score near 0. The
+            technique is robust to reordered sections and small edits, which a
+            plain diff is not, and it is what large-scale dataset cleaning
+            pipelines use in their MinHash form.
+        </p>
+
+        <p><strong>Python:</strong></p>
+        <pre><code>WORD = re.compile(r"\S+")
+
+def shingles(text: str, k: int) -&gt; set[int]:
+    words = WORD.findall(text.lower())
+    return {hash(" ".join(words[i:i + k])) for i in range(max(0, len(words) - k + 1))}
+
+# later: pairwise comparison of every document
+for i, a in enumerate(docs):
+    for b in docs[i + 1:]:
+        sa, sb = doc_sh[a], doc_sh[b]
+        j = len(sa &amp; sb) / len(sa | sb)
+        if j &gt;= args.threshold:
+            pairs.append((j, a, b))</code></pre>
+
+        <p><strong>Java equivalent:</strong></p>
+        <pre><code>static Set&lt;Integer&gt; shingles(String text, int k) {
+    String[] words = text.toLowerCase().split("\\s+");
+    Set&lt;Integer&gt; out = new HashSet&lt;&gt;();
+    for (int i = 0; i + k &lt;= words.length; i++) {
+        out.add(String.join(" ", Arrays.copyOfRange(words, i, i + k)).hashCode());
+    }
+    return out;
+}
+
+static double jaccard(Set&lt;Integer&gt; a, Set&lt;Integer&gt; b) {
+    Set&lt;Integer&gt; inter = new HashSet&lt;&gt;(a); inter.retainAll(b);
+    Set&lt;Integer&gt; union = new HashSet&lt;&gt;(a); union.addAll(b);
+    return (double) inter.size() / union.size();
+}</code></pre>
+
+        <p>
+            The Python set comprehension <code>{... for i in range(...)}</code>
+            is the loop-and-add in Java. <code>sa &amp; sb</code> and
+            <code>sa | sb</code> are <code>retainAll</code> and
+            <code>addAll</code> on copies. Python's built-in <code>hash</code>
+            of a string is salted per process, so the numbers differ between
+            runs but are consistent within one, which is all a set comparison
+            needs.
+        </p>
+
+        <h2>What the corpus contains</h2>
+
+        <table class="comparison-table">
+            <thead>
+                <tr>
+                    <th>Finding</th>
+                    <th>Evidence</th>
+                    <th>Tokens at stake</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <td>Fleet manual in three releases</td>
+                    <td>2.14, 2.15, 2.16: Jaccard 0.55 to 0.65; 80% of 2.15 is contained in 2.16</td>
+                    <td>547,000 if only 2.16 is kept</td>
+                </tr>
+                <tr>
+                    <td>Same PDF ingested twice</td>
+                    <td><code>BA_KMP_600P_series_en_V1.pdf</code> and <code>BA_KMP_600P-U-D_series_en.pdf</code> are byte-identical (<code>cmp</code> agrees)</td>
+                    <td>81,520</td>
+                </tr>
+                <tr>
+                    <td>Reflector note filed twice</td>
+                    <td>Two files, Jaccard 0.90</td>
+                    <td>1,000</td>
+                </tr>
+                <tr>
+                    <td>YAML front matter on every chunk</td>
+                    <td>type, title, resource, parent, images, tags, timestamp: 2,012 copies</td>
+                    <td>460,615 (17.6% of the corpus)</td>
+                </tr>
+                <tr>
+                    <td>Genuinely new text</td>
+                    <td>Greedy unique-shingle pass, largest documents first</td>
+                    <td>about 1.58M of 2.61M (60%)</td>
+                </tr>
+            </tbody>
+        </table>
+
+        <p>
+            The front-matter row is the one nobody expected. It is invisible in
+            search because the index does not weight it, but to a training run it
+            is 460,000 tokens of the same dozen lines, and a model trained on it
+            will start every answer with <code>---</code> and a timestamp. The
+            step 2 toy run was launched before this was found and trains on the
+            front matter; that is fine for a demonstration, and lesson 3 uses it
+            as a worked example of what a model picks up from boilerplate.
+        </p>
+
+        <h2>The rules step 3 will apply</h2>
+
+        <ol>
+            <li><strong>Strip front matter.</strong> Everything between the
+                opening and closing <code>---</code> lines. Keep the
+                <code>parent</code> and <code>pages</code> values in a
+                side-table for provenance; the model never sees them.</li>
+            <li><strong>Drop byte-identical sources.</strong> The 600P-U-D copy
+                goes. This should also be fixed upstream in kuka-mcp, where the
+                duplicate PDF wastes index space too.</li>
+            <li><strong>Keep one release per manual.</strong> Train on fleet
+                2.16 only. Its 20% of new text over 2.15 is what the current
+                product does; the older releases teach the model outdated
+                behaviour and nothing else. If release-specific questions
+                matter later, the synthetic Q&amp;A step can generate "what
+                changed in 2.16" questions from the diff, which is far cheaper
+                than training on three full copies.</li>
+            <li><strong>Keep genuine variants.</strong> The 600P-EU-D manual
+                differs enough from 600P (Jaccard below 0.5) to stay. Real
+                regional variants carry real facts.</li>
+            <li><strong>Re-run this script after cleaning</strong> and record the
+                new totals in the plan. The target is a corpus where the
+                unique-text estimate is above 90%.</li>
+        </ol>
+
+        <p>
+            Applying these rules takes the corpus from 2.61M tokens to roughly
+            1.5M, with nothing lost that the model should know. Five epochs of
+            continued pretraining drop from 13M tokens seen to under 8M, and
+            every one of them is text worth learning.
+        </p>
+
+        <h2>Running it</h2>
+
+        <pre><code>cd ~/Projects/kuka-llm
+source .venv/bin/activate
+python data/find_duplicates.py ../kuka-mcp/knowledge            # defaults: 8-word shingles, Jaccard 0.5
+python data/find_duplicates.py ../kuka-mcp/knowledge --threshold 0.3 --k 5   # looser, finds more pairs</code></pre>
+
+        <p>
+            The full report from today's run is saved in
+            <code>data/out/duplicates.txt</code> (gitignored, regenerate as
+            needed).
+        </p>
+
+        <div class="ask-teacher">
+            <strong>Questions?</strong> Ask Claude directly. Good questions:
+            "Why 8 words per shingle and not 3 or 20?",
+            "How does MinHash make this scale to millions of documents?",
+            "Would training on all three fleet releases ever be the right choice?",
+            or "What happens to a model that learns the front matter?"
+        </div>
+
+        <nav class="lesson-nav">
+            <a href="llm-01-token-counting.html">← Model Lesson 1: Counting Tokens</a>
+            <a href="llm-03-toy-lora-run.html">Next: Model Lesson 3, The Toy LoRA Run →</a>
+        </nav>
+
+    </div>
+</body>
+
+</html>
