@@ -11,8 +11,8 @@ lora_parameters:
   scale: 20.0
   dropout: 0.0
 batch_size: 2
-grad_accumulation_steps: 2       # effective batch 4 (~2.8k tokens/step) without the memory
-iters: 700                       # ~2 epochs over 946k train tokens
+grad_accumulation_steps: 2       # optimizer updates every 2 iters: effective batch 4 (~2.5k tokens)
+iters: 700                       # ~0.9 epoch: each iter is one batch of 2 rows (~1,250 tokens)
 lr_schedule:
   name: cosine_decay
   warmup: 30

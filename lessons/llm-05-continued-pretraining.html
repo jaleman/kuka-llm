@@ -1,0 +1,278 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Model Lesson 5: Continued Pretraining — The Rehearsal Run and What Scales to the Spark</title>
+    <link rel="stylesheet" href="../assets/style.css">
+</head>
+
+<body>
+    <div class="container">
+
+        <header class="lesson-header">
+            <div class="lesson-number">Model Lesson 5</div>
+            <h1>Continued Pretraining — The Rehearsal Run and What Scales to the Spark</h1>
+            <div class="lesson-meta">
+                <span>Plan step 4 (Mac rehearsal)</span>
+                <span>kuka-llm: baking KUKA knowledge into a model</span>
+            </div>
+        </header>
+
+        <h2>What changed since the toy run</h2>
+
+        <p>
+            Lesson 3 trained a 0.6B model on 270 raw chunks to prove the stack
+            worked. This step trains a 1.7B model on the cleaned dataset from
+            lesson 4, with a config written the way the real Spark run will be
+            written. Every knob below was chosen for a reason that carries over;
+            only the model size and the framework are placeholders.
+        </p>
+
+        <table class="comparison-table">
+            <thead>
+                <tr>
+                    <th>Knob</th>
+                    <th>Toy run</th>
+                    <th>Rehearsal</th>
+                    <th>Why</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <td>Base model</td>
+                    <td>Qwen3-0.6B</td>
+                    <td>Qwen3-1.7B</td>
+                    <td>Largest that trains comfortably in 16 GB with room to spare</td>
+                </tr>
+                <tr>
+                    <td>Data</td>
+                    <td>270 raw chunks, front matter included</td>
+                    <td>1,377 cleaned rows + 15% general text</td>
+                    <td>Lesson 4</td>
+                </tr>
+                <tr>
+                    <td>LoRA rank</td>
+                    <td>8</td>
+                    <td>16</td>
+                    <td>More capacity in the adapter to hold facts, not just style</td>
+                </tr>
+                <tr>
+                    <td>Layers adapted</td>
+                    <td>Top 16 of 28</td>
+                    <td>All 28</td>
+                    <td>Knowledge is distributed through the network; style sits near the top</td>
+                </tr>
+                <tr>
+                    <td>Trainable parameters</td>
+                    <td>2.9M (0.48%)</td>
+                    <td>17.4M (1.01%)</td>
+                    <td>Still tiny; the adapter file is about 70 MB</td>
+                </tr>
+                <tr>
+                    <td>Learning rate</td>
+                    <td>Constant 1e-4</td>
+                    <td>Warmup 30 steps → 1e-4 → cosine decay to 1e-5</td>
+                    <td>See below</td>
+                </tr>
+                <tr>
+                    <td>Effective batch</td>
+                    <td>2 rows</td>
+                    <td>4 rows via gradient accumulation of 2</td>
+                    <td>Smoother gradients at no extra memory</td>
+                </tr>
+                <tr>
+                    <td>Iterations</td>
+                    <td>300 (≈1.5 epochs)</td>
+                    <td>700 (≈0.9 epoch)</td>
+                    <td>One clean pass; the toy run showed the gain lands early</td>
+                </tr>
+            </tbody>
+        </table>
+
+        <h2>Learning-rate schedules</h2>
+
+        <p>
+            The toy run used one learning rate from the first step to the last.
+            That works for 300 steps but has two weaknesses. At the start, the
+            adapter weights are random and a full-size step can knock the model
+            off in a bad direction before it has any signal; at the end, a
+            full-size step keeps bouncing the weights around the minimum
+            instead of settling into it. A <strong>schedule</strong> fixes
+            both: a short linear <strong>warmup</strong> from zero to the peak,
+            then a <strong>cosine decay</strong> from the peak down to a floor.
+            The log shows it working: at iteration 10 the rate was 1.3e-5,
+            at 100 it was 9.99e-5, and by 700 it will be near 1e-5.
+        </p>
+
+        <pre><code>lr_schedule:
+  name: cosine_decay
+  warmup: 30
+  arguments: [1.0e-4, 700, 1.0e-5]   # peak, decay steps, floor</code></pre>
+
+        <p>
+            Java lens: it is the same idea as a connection pool that ramps up
+            gradually and a retry loop with decaying backoff. Nothing about the
+            work changes; only the step size over time.
+        </p>
+
+        <h2>Gradient accumulation, and how iterations count</h2>
+
+        <p>
+            One batch of two rows is about 1,250 tokens. Sixteen gigabytes will
+            not hold a bigger batch for a 1.7B model at 2,048-token sequences,
+            but a batch of two gives noisy gradients. <strong>Gradient
+            accumulation</strong> runs two batches, sums their gradients, and
+            only then lets the optimizer take a step. The model sees an
+            effective batch of four for the memory cost of two.
+        </p>
+
+        <p>
+            This changes the arithmetic, and it caught me out. In mlx_lm an
+            <em>iteration</em> is one batch, not one optimizer step. So 700
+            iterations is 700 × 1,250 ≈ 875,000 tokens, which is 0.9 of the
+            946,000-token training set, not the two epochs the first draft of
+            the config claimed. Always derive epochs from the tokens-seen
+            counter in the log, never from the config.
+        </p>
+
+        <h2>Memory: what 0.6B, 1.7B, and 8B actually cost</h2>
+
+        <table class="comparison-table">
+            <thead>
+                <tr>
+                    <th>Model</th>
+                    <th>bf16 weights</th>
+                    <th>Peak during LoRA training (measured or projected)</th>
+                    <th>Fits in</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr><td>Qwen3-0.6B</td><td>1.2 GB</td><td>7.1 GB measured (toy run)</td><td>Mac mini 16 GB</td></tr>
+                <tr><td>Qwen3-1.7B</td><td>3.4 GB</td><td>10.1 GB measured (this run)</td><td>Mac mini 16 GB</td></tr>
+                <tr><td>Qwen3-8B</td><td>16 GB</td><td>roughly 30 to 40 GB projected at the same settings</td><td>DGX Spark 128 GB</td></tr>
+                <tr><td>Qwen3-8B, batch 8, seq 4096</td><td>16 GB</td><td>roughly 60 to 80 GB projected</td><td>DGX Spark 128 GB</td></tr>
+            </tbody>
+        </table>
+
+        <p>
+            The weights are the small part. Activations, which scale with batch
+            size times sequence length, are the big part, and gradient
+            checkpointing is what keeps them in check. The Spark's budget means
+            the real run can afford a batch of eight and 4,096-token sequences,
+            which makes each step a better estimate of the gradient and lets
+            long tables stay intact.
+        </p>
+
+        <h2>Reading the validation curve</h2>
+
+        <table class="comparison-table">
+            <thead>
+                <tr>
+                    <th>Iteration</th>
+                    <th>Train loss</th>
+                    <th>Validation loss</th>
+                    <th>Learning rate</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr><td>1</td><td>–</td><td>2.379</td><td>warmup</td></tr>
+                <tr><td>50</td><td>–</td><td>2.029</td><td>1e-4</td></tr>
+                <tr><td>100</td><td>2.102</td><td>2.012</td><td>1e-4</td></tr>
+                <!-- RESULTS: rows for 200..700 and test loss are filled in when the run finishes -->
+            </tbody>
+        </table>
+
+        <p>
+            Two things stand out already. The starting loss, 2.379, is higher
+            than the toy run's 2.108 even though the model is bigger. That is
+            the cleaning working: the YAML front matter was the most
+            predictable text in the old chunks, and it is gone, and 15% of the
+            validation set is now general web text the adapter is not
+            optimising for. A higher starting loss on a harder, more honest
+            dataset is the right trade. Second, the drop from 2.379 to 2.029 by
+            iteration 50 happened while the learning rate was still warming up,
+            which says the adapter finds the domain's surface statistics almost
+            immediately. Everything after that is slower, and that slow part is
+            where facts get absorbed.
+        </p>
+
+        <h2>Before and after</h2>
+
+        <p>
+            Five completion prompts, greedy decoding. The base model's answers
+            all start the same way:
+        </p>
+
+        <pre><code>### The battery of the KMP 3000P is charged by
+&lt;think&gt;
+Okay, the user is asking about how the battery of the KMP 3000P is charged.
+First, I need to recall what I know about the KMP 3000P. It's a portable or
+maybe a handheld device, given the "3000P" suffix...</code></pre>
+
+        <p>
+            A handheld device. The base model has never seen the word KMP in a
+            KUKA context. The after column, generated with the trained adapter,
+            is the test of whether one epoch of continued pretraining changed
+            that.
+        </p>
+
+        <!-- RESULTS: after-generations and commentary are added when the run finishes -->
+
+        <h2>Carrying the config to the Spark</h2>
+
+        <table class="comparison-table">
+            <thead>
+                <tr>
+                    <th>mlx_lm (Mac)</th>
+                    <th>PEFT + TRL (Spark)</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr><td><code>lora_parameters.rank: 16</code></td><td><code>LoraConfig(r=16, lora_alpha=32)</code></td></tr>
+                <tr><td><code>num_layers: -1</code> (all linear layers)</td><td><code>target_modules="all-linear"</code></td></tr>
+                <tr><td><code>lr_schedule: cosine_decay, warmup: 30</code></td><td><code>lr_scheduler_type="cosine", warmup_steps=30</code></td></tr>
+                <tr><td><code>grad_accumulation_steps: 2</code></td><td><code>gradient_accumulation_steps=2</code></td></tr>
+                <tr><td><code>grad_checkpoint: true</code></td><td><code>gradient_checkpointing=True</code></td></tr>
+                <tr><td><code>max_seq_length: 2048</code></td><td><code>max_seq_length=4096</code> (the Spark can afford it)</td></tr>
+                <tr><td><code>data: data/out/cpt</code></td><td>Same three JSONL files, loaded with <code>datasets.load_dataset("json", ...)</code></td></tr>
+                <tr><td>adapters.safetensors</td><td>adapter_model.safetensors (same format, different filename)</td></tr>
+            </tbody>
+        </table>
+
+        <p>
+            The dataset, the evaluation prompts, and the provenance file move
+            over unchanged. The training script is the only thing rewritten.
+        </p>
+
+        <h2>Running it</h2>
+
+        <pre><code>cd ~/Projects/kuka-llm
+source .venv/bin/activate
+nohup train/cpt/run-mac.sh &gt; train/runs-cpt-mac-console.log 2&gt;&amp;1 &amp;      # ~90 min
+grep -E "Val loss|Iter [0-9]+0:" train/runs-cpt-mac-console.log | tail
+
+# talk to the adapter at any checkpoint
+python -m mlx_lm generate --model mlx-community/Qwen3-1.7B-bf16 \
+    --adapter-path train/runs/cpt-mac/adapters \
+    --prompt "The KMP 1500P is charged by" --max-tokens 80 --temp 0.7</code></pre>
+
+        <div class="ask-teacher">
+            <strong>Questions?</strong> Ask Claude directly. Good questions:
+            "Why is the starting loss higher on the cleaned data?",
+            "What would rank 64 buy, and what would it cost?",
+            "Why cosine and not a linear decay?",
+            "How do I decide between one epoch and three on the Spark?", or
+            "If the after-generations are still wrong, what does that tell us?"
+        </div>
+
+        <nav class="lesson-nav">
+            <a href="llm-04-building-the-dataset.html">← Model Lesson 4: Building the Dataset</a>
+            <a href="../PLAN.md">Plan: step 5, synthetic Q&amp;A →</a>
+        </nav>
+
+    </div>
+</body>
+
+</html>
