@@ -1,0 +1,29 @@
+# Step 4 rehearsal: continued pretraining on the cleaned dataset, Mac mini 16 GB.
+# Real run (Qwen3-8B, PyTorch/CUDA) happens on the DGX Spark with the same data.
+model: mlx-community/Qwen3-1.7B-bf16
+train: true
+data: data/out/cpt               # from data/build_cpt_dataset.py
+fine_tune_type: lora
+optimizer: adamw
+num_layers: -1                   # all 28 blocks: knowledge lives everywhere, not just the top
+lora_parameters:
+  rank: 16                       # 2x the toy run; more capacity to absorb facts
+  scale: 20.0
+  dropout: 0.0
+batch_size: 2
+grad_accumulation_steps: 2       # optimizer updates every 2 iters: effective batch 4 (~2.5k tokens)
+iters: 700                       # ~0.9 epoch: each iter is one batch of 2 rows (~1,250 tokens)
+lr_schedule:
+  name: cosine_decay
+  warmup: 30
+  arguments: [1.0e-4, 700, 1.0e-5]   # peak, decay steps, floor
+max_seq_length: 2048
+val_batches: -1                  # whole validation set (36 rows) every eval
+steps_per_report: 10
+steps_per_eval: 50
+save_every: 100
+adapter_path: train/runs/cpt-mac/adapters
+grad_checkpoint: true
+seed: 0
+test: true
+test_batches: -1

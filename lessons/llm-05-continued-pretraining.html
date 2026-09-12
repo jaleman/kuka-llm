@@ -1,0 +1,443 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Model Lesson 5: Continued Pretraining — The Rehearsal Run and What Scales to the Spark</title>
+    <link rel="stylesheet" href="../assets/style.css">
+</head>
+
+<body>
+    <div class="container">
+
+        <header class="lesson-header">
+            <div class="lesson-number">Model Lesson 5</div>
+            <h1>Continued Pretraining — The Rehearsal Run and What Scales to the Spark</h1>
+            <div class="lesson-meta">
+                <span>Plan step 4 (Mac rehearsal)</span>
+                <span>kuka-llm: baking KUKA knowledge into a model</span>
+            </div>
+        </header>
+
+        <h2>What changed since the toy run</h2>
+
+        <p>
+            Lesson 3 trained a 0.6B model on 270 raw chunks to prove the stack
+            worked. This step trains a 1.7B model on the cleaned dataset from
+            lesson 4, with a config written the way the real Spark run will be
+            written. Every knob below was chosen for a reason that carries over;
+            only the model size and the framework are placeholders.
+        </p>
+
+        <table class="comparison-table">
+            <thead>
+                <tr>
+                    <th>Knob</th>
+                    <th>Toy run</th>
+                    <th>Rehearsal</th>
+                    <th>Why</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <td>Base model</td>
+                    <td>Qwen3-0.6B</td>
+                    <td>Qwen3-1.7B</td>
+                    <td>Largest that trains comfortably in 16 GB with room to spare</td>
+                </tr>
+                <tr>
+                    <td>Data</td>
+                    <td>270 raw chunks, front matter included</td>
+                    <td>1,377 cleaned rows + 15% general text</td>
+                    <td>Lesson 4</td>
+                </tr>
+                <tr>
+                    <td>LoRA rank</td>
+                    <td>8</td>
+                    <td>16</td>
+                    <td>More capacity in the adapter to hold facts, not just style</td>
+                </tr>
+                <tr>
+                    <td>Layers adapted</td>
+                    <td>Top 16 of 28</td>
+                    <td>All 28</td>
+                    <td>Knowledge is distributed through the network; style sits near the top</td>
+                </tr>
+                <tr>
+                    <td>Trainable parameters</td>
+                    <td>2.9M (0.48%)</td>
+                    <td>17.4M (1.01%)</td>
+                    <td>Still tiny; the adapter file is about 70 MB</td>
+                </tr>
+                <tr>
+                    <td>Learning rate</td>
+                    <td>Constant 1e-4</td>
+                    <td>Run 1: warmup → 1e-4 → cosine. Run 2: warmup → 3e-5 → cosine</td>
+                    <td>Run 1 destabilised; see "The instability finding"</td>
+                </tr>
+                <tr>
+                    <td>Effective batch</td>
+                    <td>2 rows</td>
+                    <td>4 rows via gradient accumulation of 2</td>
+                    <td>Smoother gradients at no extra memory</td>
+                </tr>
+                <tr>
+                    <td>Iterations</td>
+                    <td>300 (≈1.5 epochs)</td>
+                    <td>700 (≈0.9 epoch)</td>
+                    <td>One clean pass; the toy run showed the gain lands early</td>
+                </tr>
+            </tbody>
+        </table>
+
+        <h2>Learning-rate schedules</h2>
+
+        <p>
+            The toy run used one learning rate from the first step to the last.
+            That works for 300 steps but has two weaknesses. At the start, the
+            adapter weights are random and a full-size step can knock the model
+            off in a bad direction before it has any signal; at the end, a
+            full-size step keeps bouncing the weights around the minimum
+            instead of settling into it. A <strong>schedule</strong> fixes
+            both: a short linear <strong>warmup</strong> from zero to the peak,
+            then a <strong>cosine decay</strong> from the peak down to a floor.
+            The log shows it working: at iteration 10 the rate was 1.3e-5,
+            at 100 it was 9.99e-5, and by 700 it will be near 1e-5.
+        </p>
+
+        <pre><code>lr_schedule:
+  name: cosine_decay
+  warmup: 30
+  arguments: [1.0e-4, 700, 1.0e-5]   # peak, decay steps, floor</code></pre>
+
+        <p>
+            Java lens: it is the same idea as a connection pool that ramps up
+            gradually and a retry loop with decaying backoff. Nothing about the
+            work changes; only the step size over time.
+        </p>
+
+        <h2>Gradient accumulation, and how iterations count</h2>
+
+        <p>
+            One batch of two rows is about 1,250 tokens. Sixteen gigabytes will
+            not hold a bigger batch for a 1.7B model at 2,048-token sequences,
+            but a batch of two gives noisy gradients. <strong>Gradient
+            accumulation</strong> runs two batches, sums their gradients, and
+            only then lets the optimizer take a step. The model sees an
+            effective batch of four for the memory cost of two.
+        </p>
+
+        <p>
+            This changes the arithmetic, and it caught me out. In mlx_lm an
+            <em>iteration</em> is one batch, not one optimizer step. So 700
+            iterations is 700 × 1,250 ≈ 875,000 tokens, which is 0.9 of the
+            946,000-token training set, not the two epochs the first draft of
+            the config claimed. Always derive epochs from the tokens-seen
+            counter in the log, never from the config.
+        </p>
+
+        <h2>Memory: what 0.6B, 1.7B, and 8B actually cost</h2>
+
+        <table class="comparison-table">
+            <thead>
+                <tr>
+                    <th>Model</th>
+                    <th>bf16 weights</th>
+                    <th>Peak during LoRA training (measured or projected)</th>
+                    <th>Fits in</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr><td>Qwen3-0.6B</td><td>1.2 GB</td><td>7.1 GB measured (toy run)</td><td>Mac mini 16 GB</td></tr>
+                <tr><td>Qwen3-1.7B</td><td>3.4 GB</td><td>10.1 GB measured (this run)</td><td>Mac mini 16 GB</td></tr>
+                <tr><td>Qwen3-8B</td><td>16 GB</td><td>roughly 30 to 40 GB projected at the same settings</td><td>DGX Spark 128 GB</td></tr>
+                <tr><td>Qwen3-8B, batch 8, seq 4096</td><td>16 GB</td><td>roughly 60 to 80 GB projected</td><td>DGX Spark 128 GB</td></tr>
+            </tbody>
+        </table>
+
+        <p>
+            The weights are the small part. Activations, which scale with batch
+            size times sequence length, are the big part, and gradient
+            checkpointing is what keeps them in check. The Spark's budget means
+            the real run can afford a batch of eight and 4,096-token sequences,
+            which makes each step a better estimate of the gradient and lets
+            long tables stay intact.
+        </p>
+
+        <h2>The instability finding: run 1</h2>
+
+        <p>
+            The first attempt used the toy run's peak learning rate, 1e-4,
+            with the bigger adapter. For 150 iterations it looked right. Then
+            validation loss turned around and climbed for two checkpoints in a
+            row, and the run was stopped at iteration 250.
+        </p>
+
+        <table class="comparison-table">
+            <thead>
+                <tr>
+                    <th>Iteration</th>
+                    <th>Train loss (10-step avg)</th>
+                    <th>Validation loss</th>
+                    <th>Learning rate</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr><td>1</td><td>–</td><td>2.379</td><td>warmup</td></tr>
+                <tr><td>50</td><td>2.19</td><td>2.029</td><td>1.0e-4</td></tr>
+                <tr><td>100</td><td>2.10</td><td><strong>2.012</strong></td><td>1.0e-4</td></tr>
+                <tr><td>150</td><td>2.05</td><td>2.012</td><td>9.9e-5</td></tr>
+                <tr><td>200</td><td>1.91</td><td>2.213 ↑</td><td>9.8e-5</td></tr>
+                <tr><td>250</td><td>2.19</td><td>2.315 ↑</td><td>9.6e-5</td></tr>
+            </tbody>
+        </table>
+
+        <h3>Diagnosing it</h3>
+
+        <p>
+            A rising validation loss has two common causes, and they call for
+            opposite fixes, so the first job is to tell them apart by looking
+            at the training loss alongside.
+        </p>
+
+        <ul>
+            <li><strong>Overfitting.</strong> Training loss keeps falling while
+                validation rises. The model is memorising the training rows
+                and losing the ability to generalise. Fix: fewer epochs, more
+                data, more regularisation.</li>
+            <li><strong>Instability.</strong> Training loss stops falling and
+                bounces while validation rises. The optimizer is taking steps
+                too large for the landscape, overshooting good regions and
+                scattering the weights. Fix: lower the learning rate.</li>
+        </ul>
+
+        <p>
+            Run 1's training loss between iterations 150 and 250 was 2.05,
+            1.94, 2.12, 2.36, 2.02, 1.91, 1.98, 2.17, 1.80, 1.89, 2.19: flat,
+            not falling. That is instability. It also explains why it showed up
+            when it did. The toy run tolerated 1e-4 because its adapter was
+            tiny (rank 8, top 16 layers, 2.9M parameters). This adapter is six
+            times larger and touches every layer, so each optimizer step moves
+            the model's behaviour six times as far. The same rate that was
+            gentle on the toy run was violent here. Cosine decay would have
+            brought the rate down eventually, but at iteration 250 it was still
+            at 9.6e-5, and the damage was accumulating faster than the decay.
+        </p>
+
+        <p>
+            The rule that falls out: <em>when you grow the adapter, shrink the
+            learning rate.</em> Rank, layer count, and peak rate are not
+            independent knobs.
+        </p>
+
+        <h3>The fix: resume, do not restart</h3>
+
+        <p>
+            The iteration 100 checkpoint had the best validation loss and was
+            saved to disk. Run 2 loads that adapter and continues from it with
+            a peak rate of 3e-5, a third of run 1's, a shorter warmup, and a
+            cosine decay over 600 more iterations down to 3e-6. Nothing else
+            changed, so the comparison isolates the one variable. The resumed
+            run's first validation pass read 2.016, confirming it started
+            where run 1 was at its best rather than from scratch.
+        </p>
+
+        <pre><code># train/cpt/lora-mac-v2.yaml, the lines that differ from run 1
+iters: 600
+lr_schedule:
+  name: cosine_decay
+  warmup: 10
+  arguments: [3.0e-5, 600, 3.0e-6]
+resume_adapter_file: train/runs/cpt-mac-run1/adapters/0000100_adapters.safetensors</code></pre>
+
+        <p>
+            Java lens: this is the reason you checkpoint. A long batch job
+            that fails at 40% should resume from its last good state, not rerun
+            from zero. <code>save_every: 100</code> is the training equivalent
+            of committing the job's progress.
+        </p>
+
+        <h2>Reading the validation curve: run 2</h2>
+
+        <table class="comparison-table">
+            <thead>
+                <tr>
+                    <th>Iteration (run 2)</th>
+                    <th>Train loss</th>
+                    <th>Validation loss</th>
+                    <th>Learning rate</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr><td>1 (= run 1 iter 100)</td><td>–</td><td>2.016</td><td>warmup</td></tr>
+                <tr><td>100</td><td>1.642</td><td>1.999</td><td>3.0e-5</td></tr>
+                <tr><td>200</td><td>1.855</td><td>1.903</td><td>2.9e-5</td></tr>
+                <tr><td>300</td><td>1.737</td><td>1.838</td><td>2.7e-5</td></tr>
+                <tr><td>400</td><td>1.809</td><td>1.813</td><td>2.4e-5</td></tr>
+                <tr><td>500</td><td>1.717</td><td>1.796</td><td>2.1e-5</td></tr>
+                <tr><td>600</td><td>1.925</td><td><strong>1.786</strong></td><td>1.7e-5</td></tr>
+                <tr><td colspan="4">Test loss 1.860, perplexity 6.42. Untrained to final: 2.379 → 1.786, perplexity 10.8 → 6.0. About one epoch across both runs.</td></tr>
+            </tbody>
+        </table>
+
+        <p>
+            Two things were already visible in run 1 and carry over. The
+            starting loss, 2.379, is higher than the toy run's 2.108 even
+            though the model is bigger. That is the cleaning working: the YAML
+            front matter was the most predictable text in the old chunks and it
+            is gone, and 15% of the validation set is now general web text the
+            adapter is not optimising for. A higher starting loss on a harder,
+            more honest dataset is the right trade. Second, the drop from 2.379
+            to 2.029 by iteration 50 happened while the learning rate was still
+            warming up, which says the adapter finds the domain's surface
+            statistics almost immediately. Everything after that is slower, and
+            that slow part is where facts get absorbed, and where the rate has
+            to be gentle enough not to undo them.
+        </p>
+
+        <p>
+            Run 2 shows what gentle looks like: twelve checkpoints, eleven of
+            them lower than the one before, and the twelfth flat. Train and
+            validation stay within 0.2 of each other the whole way, so there is
+            no memorisation either. The gains shrink as the rate decays, from
+            0.1 per hundred iterations early to 0.01 at the end, which is the
+            cosine schedule landing the model in a minimum instead of bouncing
+            around it. On the Spark, with the 8B model and three epochs, expect
+            the same shape stretched out, and expect to stop when a checkpoint
+            fails to improve twice in a row.
+        </p>
+
+        <h2>A generation trap: chat templates on a completion model</h2>
+
+        <p>
+            The first after-generations were garbage. Every prompt produced a
+            markdown image tag followed by a hundred zeros. The training data
+            contains no image tags at all, so the adapter could not have
+            learned that. The cause was the generator: by default
+            <code>mlx_lm generate</code> wraps the prompt in the model's chat
+            template, the <code>&lt;|im_start|&gt;user … assistant</code>
+            scaffolding an instruct model expects. The adapter was trained on
+            raw manual text with no such scaffolding. Presented with a format
+            it never saw, greedy decoding fell into the nearest attractor and
+            stayed there.
+        </p>
+
+        <p>
+            The fix is one flag, <code>--ignore-chat-template</code>, and
+            <code>run-mac.sh</code> now passes it for both the before and after
+            passes. The rule: <em>a continued-pretraining model is a completion
+            model; prompt it with text to continue, not with a conversation.</em>
+            Step 6 is where it learns the conversation format. Java lens: it is
+            calling a method with the wrong argument type and getting nonsense
+            rather than an exception, because Python and tokenizers do not
+            type-check prompts.
+        </p>
+
+        <h2>Before and after</h2>
+
+        <p>
+            Five completion prompts, greedy decoding, no chat template, 100
+            tokens. Two of the five in full; the rest are in
+            <code>train/cpt/results.md</code>.
+        </p>
+
+        <p><strong>The battery of the KMP 3000P is charged by</strong></p>
+        <pre><code>BEFORE  a 12V DC power supply. The battery is a 12V 12Ah battery. The battery
+        is connected to a 12V 12Ah battery. The battery is connected to a 12V
+        12Ah battery. The battery is connected to a 12V 12Ah battery...
+
+AFTER   a manual charger. The manual charger is a DC-DC converter that can be
+        connected to the battery terminals of the KMP 3000P. The manual charger
+        is a compact, lightweight device that can be easily carried and stored.</code></pre>
+
+        <p><strong>When the vehicle reports a localization error, the first step is to</strong></p>
+        <pre><code>BEFORE  check the GPS signal. If the GPS signal is not working, the system will
+        automatically switch to the internal clock. This is a basic function of
+        the system. However, if the internal clock is also not working...
+
+AFTER   check the localization module. If the localization module is normal,
+        the next step is to check the vehicle's position. If the vehicle's
+        position is normal, the next step is to check the vehicle's orientation.</code></pre>
+
+        <p>
+            The pre-start prompt moved from "fuel tank, oil, water, coolant" to
+            "the vehicle is not overloaded, the load is secured". The map
+            prompt moved from a generic app with "simulation or testing" to
+            "the Fleet web interface, the Map tab, the New Map button, upload a
+            local map file", which is close to the manual's actual procedure.
+        </p>
+
+        <p>
+            Read the two columns for three things. <strong>Vocabulary and
+            register</strong>: fuel, GPS, and 12V are gone; localization
+            module, load securing, and the Fleet web interface are in. One
+            epoch of continued pretraining moved the model decisively into the
+            AMR domain. <strong>Procedures</strong>: the map-creation steps and
+            the localization checklist are plausible and manual-shaped.
+            <strong>Facts</strong>: still invented. The KMP 3000P charges at a
+            charging station through contacts, not a hand-carried DC-DC
+            converter. This is the gap lessons 0 and 3 predicted, and it is
+            what the 8B model, three epochs, and the Q&amp;A stage are for.
+            The repetition loops are a 1.7B model under greedy decoding, the
+            same artefact as lesson 3, and sampling at inference removes them.
+        </p>
+
+        <h2>Carrying the config to the Spark</h2>
+
+        <table class="comparison-table">
+            <thead>
+                <tr>
+                    <th>mlx_lm (Mac)</th>
+                    <th>PEFT + TRL (Spark)</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr><td><code>lora_parameters.rank: 16</code></td><td><code>LoraConfig(r=16, lora_alpha=32)</code></td></tr>
+                <tr><td><code>num_layers: -1</code> (all linear layers)</td><td><code>target_modules="all-linear"</code></td></tr>
+                <tr><td><code>lr_schedule: cosine_decay</code>, peak 3e-5</td><td><code>lr_scheduler_type="cosine", learning_rate=3e-5, warmup_steps=30</code>. Start here, not at 1e-4</td></tr>
+                <tr><td><code>grad_accumulation_steps: 2</code></td><td><code>gradient_accumulation_steps=2</code></td></tr>
+                <tr><td><code>grad_checkpoint: true</code></td><td><code>gradient_checkpointing=True</code></td></tr>
+                <tr><td><code>max_seq_length: 2048</code></td><td><code>max_seq_length=4096</code> (the Spark can afford it)</td></tr>
+                <tr><td><code>data: data/out/cpt</code></td><td>Same three JSONL files, loaded with <code>datasets.load_dataset("json", ...)</code></td></tr>
+                <tr><td>adapters.safetensors</td><td>adapter_model.safetensors (same format, different filename)</td></tr>
+            </tbody>
+        </table>
+
+        <p>
+            The dataset, the evaluation prompts, and the provenance file move
+            over unchanged. The training script is the only thing rewritten.
+        </p>
+
+        <h2>Running it</h2>
+
+        <pre><code>cd ~/Projects/kuka-llm
+source .venv/bin/activate
+CFG=train/cpt/lora-mac-v2.yaml nohup train/cpt/run-mac.sh &gt; train/runs-cpt-mac-console.log 2&gt;&amp;1 &amp;   # ~70 min
+grep -E "Val loss|Iter [0-9]+0:" train/runs-cpt-mac-console.log | tail
+
+# talk to the adapter at any checkpoint
+python -m mlx_lm generate --model mlx-community/Qwen3-1.7B-bf16 \
+    --adapter-path train/runs/cpt-mac/adapters --ignore-chat-template \
+    --prompt "The KMP 1500P is charged by" --max-tokens 80 --temp 0.7</code></pre>
+
+        <div class="ask-teacher">
+            <strong>Questions?</strong> Ask Claude directly. Good questions:
+            "Why is the starting loss higher on the cleaned data?",
+            "What would rank 64 buy, and what would it cost?",
+            "Why cosine and not a linear decay?",
+            "How would I have caught the instability before iteration 200?",
+            "How do I decide between one epoch and three on the Spark?", or
+            "If the after-generations are still wrong, what does that tell us?", or
+            "Why did the chat template break generation but not training?"
+        </div>
+
+        <nav class="lesson-nav">
+            <a href="llm-04-building-the-dataset.html">← Model Lesson 4: Building the Dataset</a>
+            <a href="../PLAN.md">Plan: step 5, synthetic Q&amp;A →</a>
+        </nav>
+
+    </div>
+</body>
+
+</html>

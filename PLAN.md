@@ -30,7 +30,7 @@ runnable on an NVIDIA DGX Spark.
 | 1 | Token count and corpus profile | complete | `data/count_tokens.py` |
 | 2 | Foundations toy run (tiny model, watch loss fall) | complete | Mac mini, mlx_lm, Qwen3-0.6B LoRA: val loss 2.11→1.26, test ppl 4.3; lesson 3 |
 | 3 | Build continued-pretraining dataset (raw text + 10–20% general mix) | complete | Done: 2.53M raw → 868k KUKA + 131k general tokens, unique-text 94%. `data/build_cpt_dataset.py`, `data/cpt-results.md`, lesson 4. |
-| 4 | Continued pretraining run (LoRA, 8B base, 3–5 epochs) | not started | |
+| 4 | Continued pretraining run (LoRA, 8B base, 3–5 epochs) | blocked | Mac rehearsal complete (Qwen3-1.7B, val 2.379→1.786, ppl 6.0; lesson 5). Peak LR 1e-4 unstable, 3e-5 holds. 8B run needs the Spark. |
 | 5 | Synthetic Q&A generation (5–10 pairs per chunk via teacher model) | not started | |
 | 6 | Supervised fine-tuning on Q&A | not started | |
 | 7 | Evaluation harness (held-out questions, LLM judge, 3-way comparison) | not started | base vs tuned vs base+MCP |
@@ -82,4 +82,14 @@ runnable on an NVIDIA DGX Spark.
   tokens, and writes provenance. Result: 868k KUKA + 131k general tokens,
   unique-text 60% → 94%. Lesson 4 written. Step 4 (real CPT run) needs the
   Spark; a Mac rehearsal on Qwen3-1.7B is possible if wanted.
+- 2026-09-11 — Step 4 Mac rehearsal complete on branch `step-4-cpt-rehearsal`.
+  Run 1 (Qwen3-1.7B, LoRA r16 all layers, peak LR 1e-4) destabilised after
+  iter 150 (val 2.012 → 2.315, train flat); stopped at 250. Run 2 resumed from
+  the iter-100 checkpoint at peak 3e-5, cosine to 3e-6: val 2.016 → 1.786 over
+  600 iters, test ppl 6.42, ~1 epoch total, peak 10.2 GB, ~2.5 h wall.
+  Generation trap found: mlx_lm applies the chat template by default and the
+  CPT adapter collapses on it; `--ignore-chat-template` fixes it. Raw
+  before/after: domain vocabulary and procedures transferred, facts still
+  invented. Spark config should start at peak LR 3e-5. Lesson 5 written,
+  results in `train/cpt/results.md`. Step marked blocked pending the Spark.
 
