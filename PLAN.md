@@ -29,7 +29,7 @@ runnable on an NVIDIA DGX Spark.
 |------|------|--------|-------|
 | 1 | Token count and corpus profile | complete | `data/count_tokens.py` |
 | 2 | Foundations toy run (tiny model, watch loss fall) | complete | Mac mini, mlx_lm, Qwen3-0.6B LoRA: val loss 2.11→1.26, test ppl 4.3; lesson 3 |
-| 3 | Build continued-pretraining dataset (raw text + 10–20% general mix) | not started | Redundancy investigated early (lesson 2): strip front matter (17.6% of tokens), drop byte-identical 600P-U-D PDF, keep fleet 2.16 only, collapse reflector-note pair. Target: unique-text > 90%. |
+| 3 | Build continued-pretraining dataset (raw text + 10–20% general mix) | complete | Done: 2.53M raw → 868k KUKA + 131k general tokens, unique-text 94%. `data/build_cpt_dataset.py`, `data/cpt-results.md`, lesson 4. |
 | 4 | Continued pretraining run (LoRA, 8B base, 3–5 epochs) | not started | |
 | 5 | Synthetic Q&A generation (5–10 pairs per chunk via teacher model) | not started | |
 | 6 | Supervised fine-tuning on Q&A | not started | |
@@ -73,4 +73,13 @@ runnable on an NVIDIA DGX Spark.
   train/val gap opened after iter 200. Results in `train/toy/results.md`,
   lesson 3 written. Lessons 0–3 now exist. Awaiting user review/merge;
   no GitHub remote exists yet for this repo.
+- 2026-09-11 — Step 3 complete on branch `step-3-cpt-dataset` (stacked on
+  step 2). `data/fetch_general.py` streams FineWeb-Edu (score ≥ 3) for the
+  15% general mix; `data/build_cpt_dataset.py` drops superseded releases
+  (fleet 2.11/2.14/2.15, QR-code v2.00), strips front matter, cleans pdftotext
+  layout and both footer shapes, near-dedupes at paragraph level (8-word
+  shingles, ≥ 80% seen → drop; 5,245 paragraphs), re-chunks to ≤ 2,048
+  tokens, and writes provenance. Result: 868k KUKA + 131k general tokens,
+  unique-text 60% → 94%. Lesson 4 written. Step 4 (real CPT run) needs the
+  Spark; a Mac rehearsal on Qwen3-1.7B is possible if wanted.
 
