@@ -271,7 +271,13 @@ resume_adapter_file: train/runs/cpt-mac-run1/adapters/0000100_adapters.safetenso
             </thead>
             <tbody>
                 <tr><td>1 (= run 1 iter 100)</td><td>–</td><td>2.016</td><td>warmup</td></tr>
-                <!-- RESULTS: rows for 50..600 and test loss are filled in when run 2 finishes -->
+                <tr><td>100</td><td>1.642</td><td>1.999</td><td>3.0e-5</td></tr>
+                <tr><td>200</td><td>1.855</td><td>1.903</td><td>2.9e-5</td></tr>
+                <tr><td>300</td><td>1.737</td><td>1.838</td><td>2.7e-5</td></tr>
+                <tr><td>400</td><td>1.809</td><td>1.813</td><td>2.4e-5</td></tr>
+                <tr><td>500</td><td>1.717</td><td>1.796</td><td>2.1e-5</td></tr>
+                <tr><td>600</td><td>1.925</td><td><strong>1.786</strong></td><td>1.7e-5</td></tr>
+                <tr><td colspan="4">Test loss 1.860, perplexity 6.42. Untrained to final: 2.379 → 1.786, perplexity 10.8 → 6.0. About one epoch across both runs.</td></tr>
             </tbody>
         </table>
 
@@ -290,30 +296,92 @@ resume_adapter_file: train/runs/cpt-mac-run1/adapters/0000100_adapters.safetenso
             to be gentle enough not to undo them.
         </p>
 
+        <p>
+            Run 2 shows what gentle looks like: twelve checkpoints, eleven of
+            them lower than the one before, and the twelfth flat. Train and
+            validation stay within 0.2 of each other the whole way, so there is
+            no memorisation either. The gains shrink as the rate decays, from
+            0.1 per hundred iterations early to 0.01 at the end, which is the
+            cosine schedule landing the model in a minimum instead of bouncing
+            around it. On the Spark, with the 8B model and three epochs, expect
+            the same shape stretched out, and expect to stop when a checkpoint
+            fails to improve twice in a row.
+        </p>
+
+        <h2>A generation trap: chat templates on a completion model</h2>
+
+        <p>
+            The first after-generations were garbage. Every prompt produced a
+            markdown image tag followed by a hundred zeros. The training data
+            contains no image tags at all, so the adapter could not have
+            learned that. The cause was the generator: by default
+            <code>mlx_lm generate</code> wraps the prompt in the model's chat
+            template, the <code>&lt;|im_start|&gt;user … assistant</code>
+            scaffolding an instruct model expects. The adapter was trained on
+            raw manual text with no such scaffolding. Presented with a format
+            it never saw, greedy decoding fell into the nearest attractor and
+            stayed there.
+        </p>
+
+        <p>
+            The fix is one flag, <code>--ignore-chat-template</code>, and
+            <code>run-mac.sh</code> now passes it for both the before and after
+            passes. The rule: <em>a continued-pretraining model is a completion
+            model; prompt it with text to continue, not with a conversation.</em>
+            Step 6 is where it learns the conversation format. Java lens: it is
+            calling a method with the wrong argument type and getting nonsense
+            rather than an exception, because Python and tokenizers do not
+            type-check prompts.
+        </p>
+
         <h2>Before and after</h2>
 
         <p>
-            Five completion prompts, greedy decoding. The base model's answers
-            all start the same way:
+            Five completion prompts, greedy decoding, no chat template, 100
+            tokens. Two of the five in full; the rest are in
+            <code>train/cpt/results.md</code>.
         </p>
 
-        <pre><code>### The battery of the KMP 3000P is charged by
-&lt;think&gt;
-Okay, the user is asking about how the battery of the KMP 3000P is charged.
-First, I need to recall what I know about the KMP 3000P. It's a portable or
-maybe a handheld device, given the "3000P" suffix...</code></pre>
+        <p><strong>The battery of the KMP 3000P is charged by</strong></p>
+        <pre><code>BEFORE  a 12V DC power supply. The battery is a 12V 12Ah battery. The battery
+        is connected to a 12V 12Ah battery. The battery is connected to a 12V
+        12Ah battery. The battery is connected to a 12V 12Ah battery...
+
+AFTER   a manual charger. The manual charger is a DC-DC converter that can be
+        connected to the battery terminals of the KMP 3000P. The manual charger
+        is a compact, lightweight device that can be easily carried and stored.</code></pre>
+
+        <p><strong>When the vehicle reports a localization error, the first step is to</strong></p>
+        <pre><code>BEFORE  check the GPS signal. If the GPS signal is not working, the system will
+        automatically switch to the internal clock. This is a basic function of
+        the system. However, if the internal clock is also not working...
+
+AFTER   check the localization module. If the localization module is normal,
+        the next step is to check the vehicle's position. If the vehicle's
+        position is normal, the next step is to check the vehicle's orientation.</code></pre>
 
         <p>
-            That is wrong. The KMP 3000P is an autonomous mobile platform with
-            a payload capacity of 3,000 kg, a vehicle that carries pallets and
-            machine parts across a factory floor. The base model has never seen
-            "KMP" in a KUKA context and reasons from the string alone, so it
-            invents a handheld gadget. Every one of the five prompts fails the
-            same way. The after column, generated with the trained adapter, is
-            the test of whether one epoch of continued pretraining changed that.
+            The pre-start prompt moved from "fuel tank, oil, water, coolant" to
+            "the vehicle is not overloaded, the load is secured". The map
+            prompt moved from a generic app with "simulation or testing" to
+            "the Fleet web interface, the Map tab, the New Map button, upload a
+            local map file", which is close to the manual's actual procedure.
         </p>
 
-        <!-- RESULTS: after-generations and commentary are added when the run finishes -->
+        <p>
+            Read the two columns for three things. <strong>Vocabulary and
+            register</strong>: fuel, GPS, and 12V are gone; localization
+            module, load securing, and the Fleet web interface are in. One
+            epoch of continued pretraining moved the model decisively into the
+            AMR domain. <strong>Procedures</strong>: the map-creation steps and
+            the localization checklist are plausible and manual-shaped.
+            <strong>Facts</strong>: still invented. The KMP 3000P charges at a
+            charging station through contacts, not a hand-carried DC-DC
+            converter. This is the gap lessons 0 and 3 predicted, and it is
+            what the 8B model, three epochs, and the Q&amp;A stage are for.
+            The repetition loops are a 1.7B model under greedy decoding, the
+            same artefact as lesson 3, and sampling at inference removes them.
+        </p>
 
         <h2>Carrying the config to the Spark</h2>
 
@@ -350,7 +418,7 @@ grep -E "Val loss|Iter [0-9]+0:" train/runs-cpt-mac-console.log | tail
 
 # talk to the adapter at any checkpoint
 python -m mlx_lm generate --model mlx-community/Qwen3-1.7B-bf16 \
-    --adapter-path train/runs/cpt-mac/adapters \
+    --adapter-path train/runs/cpt-mac/adapters --ignore-chat-template \
     --prompt "The KMP 1500P is charged by" --max-tokens 80 --temp 0.7</code></pre>
 
         <div class="ask-teacher">
@@ -360,7 +428,8 @@ python -m mlx_lm generate --model mlx-community/Qwen3-1.7B-bf16 \
             "Why cosine and not a linear decay?",
             "How would I have caught the instability before iteration 200?",
             "How do I decide between one epoch and three on the Spark?", or
-            "If the after-generations are still wrong, what does that tell us?"
+            "If the after-generations are still wrong, what does that tell us?", or
+            "Why did the chat template break generation but not training?"
         </div>
 
         <nav class="lesson-nav">

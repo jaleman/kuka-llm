@@ -18,7 +18,7 @@ gen() {  # $1 = output file, $2.. = extra args
   while IFS= read -r prompt; do
     [ -z "$prompt" ] && continue
     { echo "### $prompt"; $PY -m mlx_lm generate --model "$MODEL" "$@" \
-        --prompt "$prompt" --max-tokens 100 --temp 0 2>/dev/null | sed -n '/^==========$/,/^==========$/p' | grep -v '^==========$'; echo; } >> "$out"
+        --ignore-chat-template --prompt "$prompt" --max-tokens 100 --temp 0 2>/dev/null | sed -n '/^==========$/,/^==========$/p' | grep -v '^==========$'; echo; } >> "$out"
   done < train/cpt/prompts.txt
 }
 
