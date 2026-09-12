@@ -1,0 +1,309 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Model Lesson 3: The Toy LoRA Run — Watching Loss Fall on a 16 GB Mac</title>
+    <link rel="stylesheet" href="../assets/style.css">
+</head>
+
+<body>
+    <div class="container">
+
+        <header class="lesson-header">
+            <div class="lesson-number">Model Lesson 3</div>
+            <h1>The Toy LoRA Run — Watching Loss Fall on a 16 GB Mac</h1>
+            <div class="lesson-meta">
+                <span>Plan step 2</span>
+                <span>kuka-llm: baking KUKA knowledge into a model</span>
+            </div>
+        </header>
+
+        <h2>What the toy run is for</h2>
+
+        <p>
+            Before spending days of Spark time on an 8B model, we need to know
+            three things: that the training stack works end to end, what the
+            knobs in a config actually do, and what a loss curve looks like when
+            training is going well. A 0.6B model on 270 chunks answers all three
+            in twenty minutes on the Mac mini. The model it produces is not
+            useful. The run is.
+        </p>
+
+        <h2>The pieces</h2>
+
+        <p>
+            Three files, all in the repo. <code>data/make_toy_set.py</code>
+            samples chunks and writes the JSONL files the trainer expects.
+            <code>train/toy/lora.yaml</code> holds every training knob.
+            <code>train/toy/run.sh</code> strings them together: disk check,
+            build the dataset, generate from the base model, train, generate
+            again with the adapter.
+        </p>
+
+        <h3>The dataset format</h3>
+
+        <p>
+            The trainer reads one JSON object per line. For continued
+            pretraining the object has a single key, <code>text</code>, and the
+            model learns to predict every token of it. That is the whole
+            format. Question and answer training in step 6 uses a
+            <code>messages</code> key instead, but the file shape is the same.
+        </p>
+
+        <p><strong>Python:</strong></p>
+        <pre><code>n_valid = max(1, len(texts) // 20)          # 5%
+n_test = max(1, len(texts) // 20)           # 5%
+splits = {
+    "test": texts[:n_test],
+    "valid": texts[n_test:n_test + n_valid],
+    "train": texts[n_test + n_valid:],
+}
+for name, rows in splits.items():
+    with (out / f"{name}.jsonl").open("w", encoding="utf-8") as fh:
+        for t in rows:
+            fh.write(json.dumps({"text": t}, ensure_ascii=False) + "\n")</code></pre>
+
+        <p><strong>Java equivalent:</strong></p>
+        <pre><code>int nValid = Math.max(1, texts.size() / 20);
+int nTest  = Math.max(1, texts.size() / 20);
+Map&lt;String, List&lt;String&gt;&gt; splits = Map.of(
+    "test",  texts.subList(0, nTest),
+    "valid", texts.subList(nTest, nTest + nValid),
+    "train", texts.subList(nTest + nValid, texts.size()));
+ObjectMapper om = new ObjectMapper();
+for (var e : splits.entrySet()) {
+    try (var w = Files.newBufferedWriter(out.resolve(e.getKey() + ".jsonl"))) {
+        for (String t : e.getValue()) {
+            w.write(om.writeValueAsString(Map.of("text", t)));
+            w.newLine();
+        }
+    }
+}</code></pre>
+
+        <p>
+            Slicing a list with <code>texts[a:b]</code> is
+            <code>subList(a, b)</code>. <code>json.dumps</code> is Jackson's
+            <code>writeValueAsString</code>, in the standard library. The three
+            splits matter: the model trains on <code>train</code>, its progress
+            is checked on <code>valid</code> every 50 steps, and
+            <code>test</code> is touched exactly once at the end so the final
+            number is honest.
+        </p>
+
+        <h3>The config, knob by knob</h3>
+
+        <pre><code>model: mlx-community/Qwen3-0.6B-bf16
+fine_tune_type: lora
+num_layers: 16          # adapt the top 16 of 28 transformer blocks
+batch_size: 2
+iters: 300
+learning_rate: 1.0e-4   # typical LoRA rate; 10x higher than full fine-tuning
+max_seq_length: 2048
+steps_per_eval: 50
+grad_checkpoint: true   # trade compute for memory; matters on 16 GB</code></pre>
+
+        <table class="comparison-table">
+            <thead>
+                <tr>
+                    <th>Knob</th>
+                    <th>What it does</th>
+                    <th>Why this value</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <td><code>model</code></td>
+                    <td>Base weights to start from, pulled from the Hub into <code>HF_HOME</code></td>
+                    <td>0.6B in bf16 is 1.2 GB; loads in seconds, trains in minutes</td>
+                </tr>
+                <tr>
+                    <td><code>fine_tune_type: lora</code></td>
+                    <td>Freeze the base, train small side matrices</td>
+                    <td>2.88M trainable parameters, 0.48% of the model, 11 MB on disk</td>
+                </tr>
+                <tr>
+                    <td><code>num_layers: 16</code></td>
+                    <td>Attach adapters to the last 16 blocks only</td>
+                    <td>Upper layers hold more domain-specific behaviour; fewer adapters, less memory</td>
+                </tr>
+                <tr>
+                    <td><code>batch_size: 2</code></td>
+                    <td>Chunks per optimizer step</td>
+                    <td>Two 2k-token chunks is what fits beside the model in 16 GB</td>
+                </tr>
+                <tr>
+                    <td><code>iters: 300</code></td>
+                    <td>Optimizer steps</td>
+                    <td>300 × 2 = 600 chunk views ≈ 1.5 epochs over 270 chunks</td>
+                </tr>
+                <tr>
+                    <td><code>learning_rate: 1e-4</code></td>
+                    <td>Step size</td>
+                    <td>Standard for LoRA. Full fine-tuning would use 1e-5</td>
+                </tr>
+                <tr>
+                    <td><code>max_seq_length: 2048</code></td>
+                    <td>Truncate longer examples</td>
+                    <td>Dataset builder caps chunks at 8,500 chars so none are cut</td>
+                </tr>
+                <tr>
+                    <td><code>grad_checkpoint: true</code></td>
+                    <td>Recompute activations instead of storing them</td>
+                    <td>Peak memory 7.1 GB with it; would not fit comfortably without</td>
+                </tr>
+            </tbody>
+        </table>
+
+        <h2>The loss curve</h2>
+
+        <table class="comparison-table">
+            <thead>
+                <tr>
+                    <th>Iteration</th>
+                    <th>Train loss</th>
+                    <th>Validation loss</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr><td>1</td><td>–</td><td>2.108</td></tr>
+                <tr><td>50</td><td>1.686</td><td>1.463</td></tr>
+                <tr><td>100</td><td>1.434</td><td>1.346</td></tr>
+                <tr><td>150</td><td>1.087</td><td>1.308</td></tr>
+                <tr><td>200</td><td>1.007</td><td>1.302</td></tr>
+                <tr><td>250</td><td>1.160</td><td>1.233</td></tr>
+                <tr><td>300</td><td>0.785</td><td>1.261</td></tr>
+            </tbody>
+        </table>
+
+        <p>
+            Read it in three phases. <strong>Iterations 1 to 100</strong>:
+            both losses fall fast. The model is learning the surface of the
+            domain: KUKA vocabulary, the manual's sentence shapes, the front
+            matter it should not have been shown. This is where most of the
+            gain is. <strong>100 to 200</strong>: validation flattens at about
+            1.30 while training loss keeps dropping. The easy wins are taken.
+            <strong>200 to 300</strong>: training loss drops to 0.79, validation
+            wobbles around 1.25 and ticks up at the end. The gap between the two
+            lines is now half a nat, and that gap is overfitting starting. On a
+            real run this is where you would stop, or lower the learning rate.
+        </p>
+
+        <p>
+            The final test perplexity is 4.3, from about 8.2 at the start
+            (<code>exp(2.108)</code>). In words: the model went from "as unsure
+            as picking between eight tokens" to "between four" on KUKA text it
+            had never seen. A single figure like that is what the step 7 harness
+            will track across runs.
+        </p>
+
+        <h2>What the model actually learned</h2>
+
+        <p>
+            Same prompt, greedy decoding, before and after. The prompt is
+            deliberately a sentence from the manual's world:
+            <em>"The KMP 1500P is an autonomous mobile platform. Before
+            starting the vehicle, the operator must"</em>.
+        </p>
+
+        <p><strong>Before, the base model:</strong></p>
+        <pre><code>&lt;think&gt;
+Okay, so I need to figure out what the KMP 1500P is. It's an autonomous
+mobile platform. Let me start by recalling what I know about autonomous
+vehicles. They usually have sensors, cameras, and maybe some AI to
+navigate. The KMP 1500P might be a specific model. ...</code></pre>
+
+        <p><strong>After, base plus adapter:</strong></p>
+        <pre><code>&lt;/think&gt;! The KMP 1500P is an autonomous mobile platform. Before starting
+the vehicle, the operator must ensure the following preconditions and
+requirements are met.
+1. Check the battery level.
+2. Check the network connection.
+3. Check the GPS device.
+4. Check the LED strip.
+5. Check the charging station.
+6. Check the charging interface.
+7. Check the charging mode.
+8. Check the charging voltage.
+9. Check the charging current. ...</code></pre>
+
+        <p>
+            Three observations, and they preview the rest of the project.
+        </p>
+
+        <ol>
+            <li><strong>Style transferred almost immediately.</strong> The base
+                model rambles in first person. The tuned one writes "ensure the
+                following preconditions and requirements are met" and a numbered
+                list, which is exactly how the manuals read. The word
+                "Precondition" appeared 674 times in the corpus (lesson 2), and
+                the model picked it up. It also stopped using Qwen3's
+                <code>&lt;think&gt;</code> mode, because no training text
+                contained it.</li>
+            <li><strong>Facts did not transfer.</strong> KMP vehicles localise
+                with laser scanners and reflectors; "GPS device" is a plausible
+                guess from general knowledge, not the manual. This is the
+                hallucination lesson 0 warned about, and it is why 300 steps on
+                a 0.6B model is a demo. Facts need the bigger model, the full
+                cleaned corpus, more epochs, and the Q&amp;A stage.</li>
+            <li><strong>The list degenerates into a loop.</strong> "Check the
+                charging station / interface / mode / voltage / current…" is a
+                small model under greedy decoding falling into a repeating
+                pattern. Sampling with a temperature above zero, a repetition
+                penalty, or simply a larger model all fix it. It is not a
+                training bug.</li>
+        </ol>
+
+        <h2>How this carries to the Spark</h2>
+
+        <p>
+            The config keys above are MLX's names, but every one of them has a
+            direct counterpart in PyTorch's PEFT and TRL libraries:
+            <code>num_layers</code> becomes <code>target_modules</code> and
+            <code>layers_to_transform</code>, <code>iters</code> becomes
+            <code>max_steps</code>, <code>grad_checkpoint</code> becomes
+            <code>gradient_checkpointing</code>. The JSONL dataset files are
+            identical. The adapter is a <code>safetensors</code> file either
+            way. When step 4 runs on the Spark, the dataset and the evaluation
+            harness are reused unchanged, and only the training script is
+            swapped.
+        </p>
+
+        <h2>Running it</h2>
+
+        <pre><code>cd ~/Projects/kuka-llm
+source .venv/bin/activate
+pip install -r train/requirements-mac.txt
+nohup train/toy/run.sh &gt; train/runs-toy-console.log 2&gt;&amp;1 &amp;    # ~20 min
+tail -f train/runs-toy-console.log
+
+# try the adapter yourself
+python -m mlx_lm generate --model mlx-community/Qwen3-0.6B-bf16 \
+    --adapter-path train/runs/toy/adapters \
+    --prompt "The safety laser scanner on the KMP 1500P" --max-tokens 100 --temp 0.7</code></pre>
+
+        <p>
+            The run's logs and the per-iteration numbers are in
+            <code>train/toy/results.md</code>; the adapter and raw logs under
+            <code>train/runs/</code> are gitignored.
+        </p>
+
+        <div class="ask-teacher">
+            <strong>Questions?</strong> Ask Claude directly. Good questions:
+            "Why did validation loss plateau while training loss kept falling?",
+            "Would 600 iterations have made the model better or worse?",
+            "Why adapt only the top 16 layers?",
+            "What would this run cost in memory on the 8B model?", or
+            "How do I stop the repeating list without retraining?"
+        </div>
+
+        <nav class="lesson-nav">
+            <a href="llm-02-corpus-redundancy.html">← Model Lesson 2: Corpus Redundancy</a>
+            <a href="../PLAN.md">Plan: step 3, building the cleaned dataset →</a>
+        </nav>
+
+    </div>
+</body>
+
+</html>

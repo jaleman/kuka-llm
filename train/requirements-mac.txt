@@ -1,0 +1,2 @@
+# Apple Silicon interim stack (Mac mini phase). On the DGX Spark use requirements-gpu.txt instead.
+mlx-lm>=0.31

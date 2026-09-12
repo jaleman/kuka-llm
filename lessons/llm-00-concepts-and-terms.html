@@ -1,0 +1,371 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Model Lesson 0: Concepts and Terms — Read This Before Everything Else</title>
+    <link rel="stylesheet" href="../assets/style.css">
+</head>
+
+<body>
+    <div class="container">
+
+        <header class="lesson-header">
+            <div class="lesson-number">Model Lesson 0</div>
+            <h1>Concepts and Terms — Read This Before Everything Else</h1>
+            <div class="lesson-meta">
+                <span>Required reading</span>
+                <span>kuka-llm: baking KUKA knowledge into a model</span>
+            </div>
+        </header>
+
+        <h2>How to use this lesson</h2>
+
+        <p>
+            Every later lesson assumes the vocabulary on this page. Read it once
+            top to bottom, then come back to it as a glossary. Each term is
+            explained in plain language first, then mapped to something a Java
+            or Rust developer already knows. The mappings are deliberately loose;
+            they are there to give you a place to hang the idea, not to be exact.
+        </p>
+
+        <h2>Part 1: What a model is</h2>
+
+        <h3>Model, parameters, weights</h3>
+        <p>
+            A language model is a very large mathematical function. Its
+            <strong>parameters</strong> (also called <strong>weights</strong>)
+            are the numbers inside that function. "An 8B model" means eight
+            billion of them. Training means adjusting those numbers; running
+            the model (<strong>inference</strong>) means evaluating the function
+            with them fixed.
+        </p>
+        <p>
+            Java lens: imagine a <code>float[8_000_000_000]</code> and a method
+            <code>predictNextToken(int[] context)</code> that reads from it. The
+            array is the model. Nothing else is stored: no rules, no database, no
+            copy of the training text. Whatever the model "knows" is smeared
+            across those floats.
+        </p>
+
+        <h3>Transformer, layers, attention</h3>
+        <p>
+            The function is organised as a stack of identical
+            <strong>layers</strong> (Qwen3-0.6B has 28, Qwen3-8B has 36). Each
+            layer has an <strong>attention</strong> block, which lets every
+            position in the input look at every other position, and a
+            feed-forward block. This architecture is the
+            <strong>transformer</strong>. You do not need to understand its
+            internals to fine-tune it, but you will see layer counts in configs,
+            because LoRA can be applied to a subset of layers.
+        </p>
+
+        <h3>Token, tokenizer, vocabulary</h3>
+        <p>
+            The model does not read characters. A <strong>tokenizer</strong>
+            converts text to a list of integers, each an index into a fixed
+            <strong>vocabulary</strong> of about 150,000 subword pieces. Common
+            words are one token; rare words and part numbers are several. All
+            costs, limits, and sizes in this project are measured in tokens.
+            Lesson 1 is entirely about this.
+        </p>
+
+        <h3>Context window, sequence length</h3>
+        <p>
+            The maximum number of tokens the model can look at in one go. Modern
+            models advertise 32k to 128k, but training is usually done at a much
+            shorter <strong>sequence length</strong> (2k to 8k) because memory
+            grows with it. A training example longer than the sequence length is
+            cut off silently, which is why lesson 1 counted chunks over 4,096.
+        </p>
+
+        <h3>Base model versus instruct model</h3>
+        <p>
+            A <strong>base</strong> model has only been trained to continue
+            text. Give it "The KMP 1500P is" and it will keep writing prose. An
+            <strong>instruct</strong> (or chat) model has had a second stage of
+            training so it answers questions and follows a conversation format.
+            We start from a base model for continued pretraining and end up with
+            our own instruct model after supervised fine-tuning.
+        </p>
+        <p>
+            Java lens: the base model is an abstract class with the core
+            behaviour. The instruct model is a subclass that overrides
+            <code>respond()</code> to expect a question and return an answer.
+        </p>
+
+        <h3>Open weights, Hugging Face Hub</h3>
+        <p>
+            <strong>Open-weights</strong> models (Qwen, Llama, Mistral, Gemma)
+            publish their parameter files so anyone can download and modify them.
+            The <strong>Hugging Face Hub</strong> is the registry where they live,
+            the way Maven Central is for jars. <code>Qwen/Qwen3-8B</code> is a
+            repository id. <code>HF_HOME</code> is the local cache directory, like
+            <code>~/.m2</code>.
+        </p>
+
+        <h2>Part 2: What training is</h2>
+
+        <h3>Loss</h3>
+        <p>
+            A single number that says how wrong the model's predictions were on a
+            batch of text. For language models it is the cross-entropy of the
+            next-token prediction. Lower is better. A base model on general
+            English scores around 2 to 3; on text it has memorised it drops below
+            1. Every training run is, in the end, a chart of loss going down.
+        </p>
+        <p>
+            Java lens: the return value of a <code>score(actual, predicted)</code>
+            method in a unit test. Training is a loop that tweaks the array until
+            the score stops improving.
+        </p>
+
+        <h3>Training loss versus validation loss</h3>
+        <p>
+            <strong>Training loss</strong> is measured on the data the model is
+            learning from. <strong>Validation loss</strong> is measured on a
+            held-out slice it never trains on. When training loss keeps falling
+            but validation loss starts rising, the model is memorising rather
+            than learning. That gap is the single most important thing to watch.
+        </p>
+
+        <h3>Overfitting, catastrophic forgetting</h3>
+        <p>
+            <strong>Overfitting</strong> is the memorising failure above.
+            <strong>Catastrophic forgetting</strong> is its cousin: train too
+            hard on KUKA manuals and the model gets worse at ordinary English and
+            reasoning. The defence is mixing in some general text (10 to 20
+            percent) and not training for too long.
+        </p>
+
+        <h3>Gradient, backpropagation</h3>
+        <p>
+            The <strong>gradient</strong> is, for each parameter, the direction
+            that would reduce the loss a little. <strong>Backpropagation</strong>
+            is the algorithm that computes all eight billion of them in one pass.
+            You will never write this; the framework does it. But it explains the
+            memory cost: for every parameter being trained, the framework keeps
+            the parameter, its gradient, and optimizer state, roughly three to
+            four times the size of the weights alone.
+        </p>
+
+        <h3>Optimizer, learning rate</h3>
+        <p>
+            The <strong>optimizer</strong> applies the gradients to the
+            parameters. AdamW is the default everywhere. The
+            <strong>learning rate</strong> is how big a step it takes: too high
+            and loss bounces or explodes, too low and nothing happens. Typical
+            values are 1e-5 for full fine-tuning and 1e-4 for LoRA. It is the
+            knob you will tune most.
+        </p>
+
+        <h3>Batch, iteration, step, epoch</h3>
+        <p>
+            A <strong>batch</strong> is the handful of examples processed
+            together before one optimizer update. One update is an
+            <strong>iteration</strong> or <strong>step</strong>. An
+            <strong>epoch</strong> is one full pass over the training set.
+            Configs specify either iterations or epochs; this project's toy run
+            uses 300 iterations with a batch of 2, which is about one epoch over
+            270 chunks.
+        </p>
+        <p>
+            Java lens: <code>for (epoch) for (batch : dataset) { loss = model.forward(batch); optimizer.step(loss.backward()); }</code>
+        </p>
+
+        <h3>Gradient accumulation, gradient checkpointing</h3>
+        <p>
+            Two memory tricks you will see in configs.
+            <strong>Accumulation</strong> runs several small batches before one
+            update, faking a bigger batch. <strong>Checkpointing</strong>
+            recomputes intermediate values during backpropagation instead of
+            storing them, trading time for memory. Both matter on a 16 GB Mac.
+        </p>
+
+        <h2>Part 3: The stages we will run</h2>
+
+        <h3>Pretraining, continued pretraining</h3>
+        <p>
+            <strong>Pretraining</strong> is the original trillion-token run that
+            produced the base model. We will never do that.
+            <strong>Continued pretraining</strong> (CPT) is running the same
+            next-token objective for a few more million tokens on our domain
+            text so the model absorbs KUKA vocabulary and facts. Step 4.
+        </p>
+
+        <h3>Supervised fine-tuning (SFT)</h3>
+        <p>
+            Training on question and answer pairs so the model learns to respond
+            in the shape we want. The prompt is usually masked out of the loss
+            so the model is only scored on the answer. Step 6.
+        </p>
+
+        <h3>Synthetic data, teacher model</h3>
+        <p>
+            We do not have thousands of human-written KUKA questions. So a
+            stronger <strong>teacher</strong> model reads each chunk and writes
+            questions and answers grounded in it. That generated set is
+            <strong>synthetic data</strong>. Its quality caps the quality of the
+            student, so the teacher should be the best model available. Step 5.
+        </p>
+
+        <h3>Fine-tuning versus RAG</h3>
+        <p>
+            <strong>RAG</strong> (retrieval-augmented generation) is what the
+            kuka-mcp server does today: search at question time and hand the
+            model the relevant text. <strong>Fine-tuning</strong> puts the
+            knowledge in the weights instead. RAG is exact and citable but
+            depends on search quality. Fine-tuning gives fluency and recall
+            without a lookup but can hallucinate specifics. Production systems
+            usually combine them. Step 9.
+        </p>
+        <p>
+            Java lens: RAG is a service that queries a database on every call.
+            Fine-tuning is hard-coding the data into the class at build time.
+        </p>
+
+        <h2>Part 4: Making it fit on the hardware</h2>
+
+        <h3>Precision: fp32, bf16, fp16</h3>
+        <p>
+            Each parameter is a floating-point number. <strong>fp32</strong> is
+            Java's <code>float</code> (4 bytes). <strong>bf16</strong> and
+            <strong>fp16</strong> are 2-byte formats; bf16 keeps the range of
+            fp32 with less precision and is the standard for training. An 8B
+            model in bf16 is 16 GB on disk and in memory before anything else.
+        </p>
+
+        <h3>Quantization: 8-bit, 4-bit, GGUF</h3>
+        <p>
+            Storing each parameter in fewer bits. 4-bit cuts an 8B model to
+            about 5 GB with a small quality loss. <strong>GGUF</strong> is the
+            file format llama.cpp and Ollama use for quantized models. We
+            quantize for inference at the end, and QLoRA quantizes the frozen
+            base during training.
+        </p>
+        <p>
+            Java lens: storing a <code>float</code> as a <code>byte</code> with
+            a scale factor. Lossy, but four times smaller.
+        </p>
+
+        <h3>Full fine-tuning versus LoRA versus QLoRA</h3>
+        <p>
+            <strong>Full fine-tuning</strong> updates every parameter and needs
+            memory for gradients and optimizer state on all of them: roughly
+            100 GB for an 8B model. <strong>LoRA</strong> (low-rank adaptation)
+            freezes the original weights and trains a small side matrix per
+            layer, typically under one percent of the parameters. The frozen
+            model plus the small adapter behaves like a fine-tuned model.
+            <strong>QLoRA</strong> is LoRA with the frozen base quantized to
+            4-bit, which is how a 70B model fits on one machine.
+        </p>
+        <p>
+            Java lens: LoRA is the decorator pattern. The original object is
+            untouched; a thin wrapper adds a delta to each call. The
+            <strong>adapter</strong> file (tens of megabytes) is the wrapper;
+            <strong>merging</strong> bakes the delta into the base weights to
+            produce a single standalone model.
+        </p>
+
+        <h3>Unified memory, GPU memory</h3>
+        <p>
+            On a discrete GPU the model must fit in the card's own memory. Apple
+            Silicon and the DGX Spark use <strong>unified memory</strong>: CPU
+            and GPU share one pool, so "16 GB" or "128 GB" is the whole budget
+            for OS, model, gradients, and activations together. Plan on about
+            two thirds of it being usable for the model.
+        </p>
+
+        <h3>MLX, PyTorch, CUDA</h3>
+        <p>
+            <strong>PyTorch</strong> is the standard training framework;
+            <strong>CUDA</strong> is NVIDIA's GPU layer underneath it. That is
+            the Spark stack. <strong>MLX</strong> is Apple's equivalent for
+            Apple Silicon and what the Mac mini phase uses. Same concepts, same
+            file formats for data and adapters, different code in
+            <code>train/</code>.
+        </p>
+
+        <h2>Part 5: Knowing whether it worked</h2>
+
+        <h3>Perplexity</h3>
+        <p>
+            <code>exp(loss)</code>. A more readable form of loss: "the model is
+            as uncertain as if choosing uniformly among N tokens". Perplexity of
+            8 on KUKA text is good; 40 means it has barely learned the domain.
+        </p>
+
+        <h3>Held-out set, evaluation harness, LLM judge</h3>
+        <p>
+            A <strong>held-out set</strong> is data the model never trained on,
+            used to measure it honestly. An <strong>evaluation harness</strong>
+            is the script that runs the model over that set and scores it. For
+            free-text answers the scoring is usually done by an
+            <strong>LLM judge</strong>: a strong model compares the answer to the
+            reference and grades it. Step 7 builds this and compares three
+            systems: base model, tuned model, and base model plus the MCP
+            server.
+        </p>
+
+        <h3>Hallucination</h3>
+        <p>
+            A fluent, confident, wrong answer. Fine-tuned models hallucinate
+            specifics (torque values, part numbers) more than they hallucinate
+            procedures. This is the main reason step 9 keeps the MCP server in
+            the loop.
+        </p>
+
+        <h2>Quick reference</h2>
+
+        <table class="comparison-table">
+            <thead>
+                <tr>
+                    <th>Term</th>
+                    <th>One line</th>
+                    <th>Java / Rust hook</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr><td>Weights</td><td>The numbers that are the model</td><td>A giant <code>float[]</code></td></tr>
+                <tr><td>Token</td><td>Unit of text the model reads, ~0.5 words</td><td>Index into a fixed dictionary</td></tr>
+                <tr><td>Loss</td><td>How wrong a prediction was; lower is better</td><td>Test score to minimise</td></tr>
+                <tr><td>Epoch</td><td>One pass over the training set</td><td>Outer loop</td></tr>
+                <tr><td>Batch / step</td><td>Examples per update / one update</td><td>Inner loop body</td></tr>
+                <tr><td>Learning rate</td><td>Step size of each update</td><td>The knob you tune first</td></tr>
+                <tr><td>Base vs instruct</td><td>Continues text vs answers questions</td><td>Abstract class vs subclass</td></tr>
+                <tr><td>CPT</td><td>More next-token training on domain text</td><td>Step 4</td></tr>
+                <tr><td>SFT</td><td>Training on Q&amp;A pairs</td><td>Step 6</td></tr>
+                <tr><td>LoRA</td><td>Train a small delta, freeze the base</td><td>Decorator pattern</td></tr>
+                <tr><td>Adapter</td><td>The saved LoRA delta, tens of MB</td><td>A patch file</td></tr>
+                <tr><td>Merge</td><td>Bake the adapter into the base weights</td><td>Apply the patch</td></tr>
+                <tr><td>Quantization</td><td>Fewer bits per weight</td><td><code>float</code> to <code>byte</code> with scale</td></tr>
+                <tr><td>bf16</td><td>2-byte float used for training</td><td>Half a <code>float</code></td></tr>
+                <tr><td>GGUF</td><td>Quantized model file for llama.cpp / Ollama</td><td>A fat jar</td></tr>
+                <tr><td>RAG</td><td>Look up text at question time (kuka-mcp)</td><td>Database query per call</td></tr>
+                <tr><td>Teacher model</td><td>Strong model that writes synthetic Q&amp;A</td><td>Test-data generator</td></tr>
+                <tr><td>Held-out set</td><td>Data never trained on, used to score</td><td>Test set, not training set</td></tr>
+                <tr><td>LLM judge</td><td>A model grading another model's answers</td><td>Automated code review</td></tr>
+                <tr><td>Perplexity</td><td><code>exp(loss)</code>, readable uncertainty</td><td>Same thing, different units</td></tr>
+                <tr><td>HF Hub / HF_HOME</td><td>Model registry / local cache</td><td>Maven Central / <code>~/.m2</code></td></tr>
+                <tr><td>MLX vs CUDA</td><td>Apple vs NVIDIA training stacks</td><td>Two JVM vendors, same bytecode</td></tr>
+            </tbody>
+        </table>
+
+        <div class="ask-teacher">
+            <strong>Questions?</strong> Ask Claude directly. Good questions:
+            "Why does LoRA work if it only touches one percent of the weights?",
+            "What does a loss of 1.5 actually mean?",
+            "Why is bf16 preferred over fp16?", or
+            "If fine-tuning hallucinates specifics, why do it at all?"
+        </div>
+
+        <nav class="lesson-nav">
+            <a href="../README.md">← Project README</a>
+            <a href="llm-01-token-counting.html">Next: Model Lesson 1, Counting Tokens →</a>
+        </nav>
+
+    </div>
+</body>
+
+</html>
